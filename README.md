@@ -1,9 +1,14 @@
 # publish-jar
 
-Publishes a jar and its POM to a Maven repository. Clojars first. Plain
-Clojure over `babashka.http-client`, no Maven, so it runs on the JVM and in
-[babashka](https://github.com/babashka/babashka), where it is the publish
+Deploys a jar and its POM to a Maven repository, Clojars first, or
+installs them in `~/.m2`. Plain Clojure over `babashka.http-client`, no
+Maven, so it runs on the JVM and in
+[babashka](https://github.com/babashka/babashka), where it is the deploy
 step for a `build.clj` that runs with `bb`.
+
+The options are [deps-deploy](https://github.com/slipset/deps-deploy)'s.
+A `build.clj` that calls `deps-deploy.deps-deploy/deploy` moves over by
+changing the require.
 
 ## Usage
 
@@ -15,24 +20,52 @@ io.github.babashka/publish-jar {:mvn/version "0.0.1"}
 ```clojure
 (require '[babashka.publish-jar :as publish])
 
-(publish/publish {:jar "target/lib.jar"
-                  :pom "target/classes/META-INF/maven/my.group/lib/pom.xml"
-                  :repository :clojars})
+;; to Clojars, credentials from CLOJARS_USERNAME and CLOJARS_PASSWORD
+(publish/deploy {:artifact "target/lib.jar"
+                 :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
+
+;; into ~/.m2/repository
+(publish/deploy {:installer :local
+                 :artifact "target/lib.jar"
+                 :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
 ```
 
-With tools.build, `write-pom` writes the POM at that path and `jar` the jar;
-`publish` takes it from there.
+With tools.build, `write-pom` writes the POM at that path and `jar` the
+jar. From the command line, as with deps-deploy:
+
+```
+clojure -M -m babashka.publish-jar deploy target/lib.jar
+```
+
+## Options
+
+| option             | meaning                                                                                   |
+|--------------------|-------------------------------------------------------------------------------------------|
+| `:artifact`        | the jar, required; uploaded as `artifact-version.jar`, or `artifact-version-classifier.jar` when its name has that shape |
+| `:pom-file`        | the POM, default `pom.xml`                                                                |
+| `:installer`       | `:remote`, the default, or `:local`                                                       |
+| `:repository`      | nothing for Clojars; a URL; `{:url ... :id ... :username ... :password ...}`; or `{"id" {:url ...}}` as deps-deploy has it |
+| `:sign-releases?`  | sign the jar and POM with gpg and publish the `.asc` files                                |
+| `:sign-key-id`     | the gpg key to sign with, the default key otherwise                                       |
+| `:read-passphrase?`| ask for the gpg passphrase on the console; without it gpg-agent supplies it               |
+| `:settings`        | a settings.xml to read credentials from, default `~/.m2/settings.xml`                     |
 
 ## What it does
 
-Uploads the jar and the POM, an `.md5` and `.sha1` next to each, then the
-artifact's `maven-metadata.xml` with the version added. Returns the URLs
-uploaded, in order, and throws on the first transfer that fails, with the
-URL and the HTTP status.
+Uploads each file with an `.md5` and `.sha1` next to it, the signatures
+included, then the artifact's `maven-metadata.xml` with the version added.
+Returns the URLs uploaded, or with `:installer :local` the files written,
+in order. Throws on the first transfer that fails, with the URL and the
+HTTP status.
 
-## Repositories
+## Credentials
 
-`:repository` is `:clojars`, a URL, or a map:
+In order: `:username` and `:password` in the repository map; for Clojars
+the `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` environment variables, a
+deploy token as the password; the `<server>` in `~/.m2/settings.xml`
+whose id is the repository's. Blank values count as unset. Encrypted
+passwords from `settings-security.xml` are read the way Maven reads them.
+`CLOJARS_URL` replaces the Clojars URL.
 
 ```clojure
 {:url "https://repo.example.com/releases/"
@@ -41,16 +74,20 @@ URL and the HTTP status.
  :password "..."}
 ```
 
-Credentials, in order: `:username` and `:password` in the map; for
-`:clojars` the `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` environment
-variables, a deploy token as the password; the `<server>` in
-`~/.m2/settings.xml` whose id is the repository's. Encrypted passwords
-from `settings-security.xml` are read the way Maven reads them. `:settings`
-names another settings.xml.
+## Signing
 
-## Not yet
+`:sign-releases? true` runs `gpg --armour --detach-sign` on the jar and
+the POM and uploads the signatures with checksums of their own, as Clojars
+requires. gpg-agent handles the passphrase; `:read-passphrase? true` asks
+for it on the console instead, and fails with a message when there is no
+console. `PUBLISH_JAR_GPG` or `DEPS_DEPLOY_GPG` names another gpg program.
 
-Snapshots, GPG signatures and Maven Central's publisher portal.
+## Differences from deps-deploy
+
+- `:repository` strings are URLs, not aliases into `deps.edn`'s `:mvn/repos`.
+- `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` apply to Clojars only, not to every repository.
+- No S3 repositories.
+- Snapshots are refused for now.
 
 ## License
 
