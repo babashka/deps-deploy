@@ -1,7 +1,7 @@
 # publish-jar
 
 Publishes a jar and its POM to a Maven repository. Clojars first. Plain
-Clojure over `java.net.http`, no Maven, so it runs on the JVM and in
+Clojure over `babashka.http-client`, no Maven, so it runs on the JVM and in
 [babashka](https://github.com/babashka/babashka), where it is the publish
 step for a `build.clj` that runs with `bb`.
 

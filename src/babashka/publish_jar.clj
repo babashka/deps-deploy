@@ -2,13 +2,11 @@
   "Publishes a jar and its POM to a Maven repository: the two files with
   their md5 and sha1 sidecars, then the artifact's maven-metadata.xml with
   the version added. Plain HTTP with basic auth, no Maven."
-  (:require [babashka.publish-jar.settings :as settings]
+  (:require [babashka.http-client :as http]
+            [babashka.publish-jar.settings :as settings]
             [clojure.java.io :as io]
             [clojure.string :as str])
-  (:import [java.net URI]
-           [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers HttpResponse$BodyHandlers]
-           [java.security MessageDigest]
-           [java.util Base64]))
+  (:import [java.security MessageDigest]))
 
 (def repositories
   "Named repositories: the URL and the environment variables that hold the
@@ -41,37 +39,29 @@
 
 ;;;; HTTP
 
-(defn- basic-auth [{:keys [username password]}]
-  (when (and username password)
-    (str "Basic " (.encodeToString (Base64/getEncoder) (.getBytes (str username ":" password) "UTF-8")))))
-
-(defn- request [url auth]
-  (let [builder (HttpRequest/newBuilder (URI. url))]
-    (if auth
-      (.header builder "Authorization" auth)
-      builder)))
+(defn- opts [auth]
+  (cond-> {:throw false}
+    auth (assoc :basic-auth auth)))
 
 (defn- put!
   "PUTs bytes to url. Throws with the status and body on anything but 2xx."
-  [^HttpClient client url auth ^bytes body]
-  (let [req (-> (request url auth)
-                (.header "Content-Type" "application/octet-stream")
-                (.PUT (HttpRequest$BodyPublishers/ofByteArray body))
-                (.build))
-        resp (.send client req (HttpResponse$BodyHandlers/ofString))
-        status (.statusCode resp)]
+  [url auth ^bytes body]
+  (let [{:keys [status] :as resp} (http/request (assoc (opts auth)
+                                                       :method :put
+                                                       :uri url
+                                                       :body body
+                                                       :headers {"Content-Type" "application/octet-stream"}))]
     (when-not (<= 200 status 299)
       (throw (ex-info (str "Could not transfer " url ": HTTP " status
-                           (let [b (str/trim (str (.body resp)))] (when-not (str/blank? b) (str " " b))))
-                      {:url url :status status :body (.body resp)})))
+                           (let [b (str/trim (str (:body resp)))] (when-not (str/blank? b) (str " " b))))
+                      {:url url :status status :body (:body resp)})))
     url))
 
 (defn- get-text
   "The body at url, nil when the repository has nothing there."
-  [^HttpClient client url auth]
-  (let [resp (.send client (-> (request url auth) (.GET) (.build)) (HttpResponse$BodyHandlers/ofString))
-        status (.statusCode resp)]
-    (cond (= 200 status) (.body resp)
+  [url auth]
+  (let [{:keys [status body]} (http/get url (opts auth))]
+    (cond (= 200 status) body
           (#{404 410} status) nil
           :else (throw (ex-info (str "Could not read " url ": HTTP " status) {:url url :status status})))))
 
@@ -150,7 +140,8 @@
   (when-not jar (throw (ex-info "Missing :jar" {})))
   (when-not pom (throw (ex-info "Missing :pom" {})))
   (let [repo (repository (:repository opts))
-        auth (basic-auth (credentials repo settings))
+        auth (let [{:keys [username password]} (credentials repo settings)]
+               (when (and username password) [username password]))
         pom-text (slurp pom)
         {:keys [group artifact version]} (coordinates pom-text)
         _ (when (some str/blank? [group artifact version])
@@ -159,15 +150,14 @@
             (throw (ex-info "SNAPSHOT versions are not supported" {:version version})))
         base (str (with-slash (:url repo)) (str/replace group "." "/") "/" artifact "/")
         version-base (str base version "/" artifact "-" version)
-        client (HttpClient/newHttpClient)
         upload! (fn [url ^bytes body]
-                  [(put! client url auth body)
-                   (put! client (str url ".md5") auth (.getBytes ^String (digest "MD5" body) "UTF-8"))
-                   (put! client (str url ".sha1") auth (.getBytes ^String (digest "SHA-1" body) "UTF-8"))])
+                  [(put! url auth body)
+                   (put! (str url ".md5") auth (.getBytes ^String (digest "MD5" body) "UTF-8"))
+                   (put! (str url ".sha1") auth (.getBytes ^String (digest "SHA-1" body) "UTF-8"))])
         jar-bytes (with-open [in (io/input-stream jar)] (.readAllBytes in))
         pom-bytes (.getBytes ^String pom-text "UTF-8")
         metadata-url (str base "maven-metadata.xml")
-        metadata (updated-metadata (get-text client metadata-url auth) group artifact version)]
+        metadata (updated-metadata (get-text metadata-url auth) group artifact version)]
     (into []
           (concat (upload! (str version-base ".jar") jar-bytes)
                   (upload! (str version-base ".pom") pom-bytes)

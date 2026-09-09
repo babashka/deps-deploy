@@ -1,5 +1,6 @@
 {:paths ["src"]
- :deps {org.clojure/data.xml {:mvn/version "0.2.0-alpha11"}}
+ :deps {org.babashka/http-client {:mvn/version "0.4.24"}
+        org.clojure/data.xml {:mvn/version "0.2.0-alpha11"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner {:git/sha "9d36f36ff541dac680a05010e4348c744333f191"}
