@@ -1,0 +1,11 @@
+{:paths ["."]
+ :deps {io.github.clojure/tools.build {:mvn/version "0.10.14"}
+        io.github.babashka/deps-deploy {:local/root "../.."}}
+ :tasks
+ {deploy {:doc "Build and deploy to Clojars: bb deploy 0.0.1 [sources] [sign]"
+          :requires ([build])
+          :task (let [[version & flags] *command-line-args*
+                      flags (set flags)]
+                  (build/deploy {:version version
+                                 :sources (contains? flags "sources")
+                                 :sign (contains? flags "sign")}))}}}

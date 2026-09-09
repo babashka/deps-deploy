@@ -1,10 +1,10 @@
 (ns build
   "Builds and deploys deps-deploy-test-lib, from this directory:
 
-     bb -Sdeps '{:deps {io.github.clojure/tools.build {:mvn/version \"0.10.14\"} io.github.babashka/deps-deploy {:local/root \"../..\"}}}' -cp . -e '(require (quote build)) (build/deploy {:version \"0.0.1\"})'
-     clojure -T:build deploy :version '\"0.0.1\"'
+     bb deploy 0.0.1 sources sign
+     clojure -T:build deploy :version '\"0.0.1\"' :sources true :sign true
 
-  :sources true adds a -sources jar, :sign true signs with gpg."
+  :sources adds a -sources jar, :sign signs with gpg."
   (:require [clojure.tools.build.api :as b]))
 
 (def lib 'io.github.babashka/deps-deploy-test-lib)

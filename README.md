@@ -54,7 +54,7 @@ clojure -M -m babashka.deps-deploy deploy target/lib.jar
 | `:repository`      | nothing for Clojars; a URL; `{:url ... :id ... :username ... :password ...}`; or `{"id" {:url ...}}` as deps-deploy has it |
 | `:sign-releases?`  | sign the jar and POM with gpg and publish the `.asc` files                                |
 | `:sign-key-id`     | the gpg key to sign with, the default key otherwise                                       |
-| `:read-passphrase?`| ask for the gpg passphrase on the console; without it gpg-agent supplies it               |
+| `:read-passphrase?`| `true` always asks the gpg passphrase on the console, `false` never does; see Signing      |
 | `:settings`        | a settings.xml to read credentials from, default `~/.m2/settings.xml`                     |
 
 ## What it does
@@ -85,9 +85,11 @@ passwords from `settings-security.xml` are read the way Maven reads them.
 
 `:sign-releases? true` runs `gpg --armour --detach-sign` on the jar and
 the POM and uploads the signatures with checksums of their own, as Clojars
-requires. gpg-agent handles the passphrase; `:read-passphrase? true` asks
-for it on the console instead, and fails with a message when there is no
-console. `DEPS_DEPLOY_GPG` names another gpg program.
+requires. The passphrase is asked on the console, as deps-deploy does,
+unless `:sign-key-id` is given, when gpg-agent supplies it. Without a
+console, in CI say, gpg-agent supplies it either way, where deps-deploy
+throws. `:read-passphrase? true` or `false` overrides. `DEPS_DEPLOY_GPG`
+names another gpg program.
 
 ## Differences from slipset/deps-deploy
 

@@ -146,10 +146,21 @@
   [artifact]
   (if (or (string? artifact) (instance? java.io.File artifact)) [artifact] (seq artifact)))
 
+(defn- passphrase
+  "As deps-deploy: asked on the console unless :sign-key-id is given.
+  Without a console gpg-agent supplies it, where deps-deploy would throw.
+  :read-passphrase? true or false overrides."
+  [{:keys [sign-key-id read-passphrase?]}]
+  (cond (true? read-passphrase?) (gpg/read-passphrase)
+        (false? read-passphrase?) nil
+        sign-key-id nil
+        (System/console) (gpg/read-passphrase)
+        :else nil))
+
 (defn- files
   "The files to publish as [name bytes] pairs: each jar under its Maven
   name, the POM, and with :sign-releases? a gpg signature for each."
-  [{:keys [artifact sign-releases? sign-key-id read-passphrase?]} coords pom-text]
+  [{:keys [artifact sign-releases? sign-key-id] :as options} coords pom-text]
   (let [{:keys [artifact-id version]} coords
         jar-name (fn [jar] (str artifact-id "-" version (some->> (classifier coords jar) (str "-")) ".jar"))
         pom-name (str artifact-id "-" version ".pom")
@@ -157,8 +168,7 @@
                     [pom-name (.getBytes ^String pom-text "UTF-8")])
         signed (when sign-releases?
                  (let [dir (io/file (System/getProperty "java.io.tmpdir") (str "deps-deploy-" (System/nanoTime)))
-                       gpg-opts {:key-id sign-key-id
-                                 :passphrase (when read-passphrase? (gpg/read-passphrase))}]
+                       gpg-opts {:key-id sign-key-id :passphrase (passphrase options)}]
                    (.mkdirs dir)
                    (mapv (fn [[name ^bytes bytes]]
                            (let [copy (io/file dir name)]
@@ -230,9 +240,11 @@
     :repository       nil for Clojars; a URL; {:url :id :username :password};
                       or {\"id\" {:url ...}} as deps-deploy has it
     :sign-releases?   sign the jar and POM with gpg and publish the .asc files
-    :sign-key-id      the gpg key to sign with, the default key otherwise
-    :read-passphrase? ask for the gpg passphrase on the console; without it
-                      gpg-agent supplies it
+    :sign-key-id      the gpg key to sign with; gpg-agent then supplies the
+                      passphrase, otherwise it is asked on the console, as
+                      deps-deploy does. Without a console gpg-agent
+                      supplies it either way
+    :read-passphrase? true always asks on the console, false never does
     :settings         settings.xml to read credentials from, default ~/.m2/settings.xml
 
   Credentials: the repository's :username and :password, for Clojars
