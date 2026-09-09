@@ -2,6 +2,6 @@
  :tasks
  {test {:doc "Runs the tests with bb"
         :requires ([clojure.test :as t])
-        :task (do (require 'babashka.publish-jar-test)
-                  (let [{:keys [fail error]} (t/run-tests 'babashka.publish-jar-test)]
+        :task (do (require 'babashka.deps-deploy-test)
+                  (let [{:keys [fail error]} (t/run-tests 'babashka.deps-deploy-test)]
                     (System/exit (+ fail error))))}}}

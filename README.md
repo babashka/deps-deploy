@@ -1,40 +1,47 @@
-# publish-jar
+# deps-deploy
 
-Deploys a jar and its POM to a Maven repository, Clojars first, or
-installs them in `~/.m2`. Plain Clojure over `babashka.http-client`, no
-Maven, so it runs on the JVM and in
-[babashka](https://github.com/babashka/babashka), where it is the deploy
-step for a `build.clj` that runs with `bb`.
+A stand-in for [slipset/deps-deploy](https://github.com/slipset/deps-deploy)
+that runs in [babashka](https://github.com/babashka/babashka) as well as
+on the JVM. Deploys a jar and its POM to a Maven repository, Clojars first,
+or installs them in `~/.m2`. Plain Clojure over `babashka.http-client`, no
+Maven underneath.
 
-The options are [deps-deploy](https://github.com/slipset/deps-deploy)'s.
-A `build.clj` that calls `deps-deploy.deps-deploy/deploy` moves over by
-changing the require.
+Same options, same `-main`. A `build.clj` moves over by changing one
+symbol:
+
+```clojure
+;; before
+((requiring-resolve 'deps-deploy.deps-deploy/deploy) opts)
+;; after
+((requiring-resolve 'babashka.deps-deploy/deploy) opts)
+```
 
 ## Usage
 
 ```clojure
 ;; deps.edn or bb.edn
-io.github.babashka/publish-jar {:mvn/version "0.0.1"}
+io.github.babashka/deps-deploy {:mvn/version "0.0.1"}
 ```
 
 ```clojure
-(require '[babashka.publish-jar :as publish])
+(require '[babashka.deps-deploy :as dd])
 
 ;; to Clojars, credentials from CLOJARS_USERNAME and CLOJARS_PASSWORD
-(publish/deploy {:artifact "target/lib.jar"
-                 :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
+(dd/deploy {:artifact "target/lib.jar"
+            :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
 
 ;; into ~/.m2/repository
-(publish/deploy {:installer :local
-                 :artifact "target/lib.jar"
-                 :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
+(dd/deploy {:installer :local
+            :artifact "target/lib.jar"
+            :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
 ```
 
 With tools.build, `write-pom` writes the POM at that path and `jar` the
-jar. From the command line, as with deps-deploy:
+jar. From the command line:
 
 ```
-clojure -M -m babashka.publish-jar deploy target/lib.jar
+bb -m babashka.deps-deploy deploy target/lib.jar
+clojure -M -m babashka.deps-deploy deploy target/lib.jar
 ```
 
 ## Options
@@ -80,9 +87,9 @@ passwords from `settings-security.xml` are read the way Maven reads them.
 the POM and uploads the signatures with checksums of their own, as Clojars
 requires. gpg-agent handles the passphrase; `:read-passphrase? true` asks
 for it on the console instead, and fails with a message when there is no
-console. `PUBLISH_JAR_GPG` or `DEPS_DEPLOY_GPG` names another gpg program.
+console. `DEPS_DEPLOY_GPG` names another gpg program.
 
-## Differences from deps-deploy
+## Differences from slipset/deps-deploy
 
 - `:repository` strings are URLs, not aliases into `deps.edn`'s `:mvn/repos`.
 - `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` apply to Clojars only, not to every repository.

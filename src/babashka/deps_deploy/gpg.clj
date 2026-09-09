@@ -1,15 +1,14 @@
-(ns babashka.publish-jar.gpg
+(ns babashka.deps-deploy.gpg
   "Detached armoured signatures through the gpg program, as deps-deploy
   makes them."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]))
 
 (defn program
-  "The gpg to run: the publish-jar.gpg property, PUBLISH_JAR_GPG,
-  DEPS_DEPLOY_GPG, else gpg on the path."
+  "The gpg to run: the deps-deploy.gpg property, DEPS_DEPLOY_GPG, else
+  gpg on the path."
   []
-  (or (System/getProperty "publish-jar.gpg") (System/getenv "PUBLISH_JAR_GPG")
-      (System/getenv "DEPS_DEPLOY_GPG") "gpg"))
+  (or (System/getProperty "deps-deploy.gpg") (System/getenv "DEPS_DEPLOY_GPG") "gpg"))
 
 (defn read-passphrase
   "Asks for the passphrase on the console. Throws when there is none, as

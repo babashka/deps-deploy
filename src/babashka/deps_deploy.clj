@@ -1,11 +1,11 @@
-(ns babashka.publish-jar
+(ns babashka.deps-deploy
   "Deploys a jar and its POM to a Maven repository, or installs them in
   ~/.m2. Plain HTTP with basic auth, no Maven, so it runs on the JVM and in
   babashka. The options are deps-deploy's, so a build.clj moves by
   changing its require."
   (:require [babashka.http-client :as http]
-            [babashka.publish-jar.gpg :as gpg]
-            [babashka.publish-jar.settings :as settings]
+            [babashka.deps-deploy.gpg :as gpg]
+            [babashka.deps-deploy.settings :as settings]
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.security MessageDigest]))
@@ -150,7 +150,7 @@
         jar-name (str stem ".jar")
         pom-name (str artifact-id "-" version ".pom")
         signed (when sign-releases?
-                 (let [dir (io/file (System/getProperty "java.io.tmpdir") (str "publish-jar-" (System/nanoTime)))
+                 (let [dir (io/file (System/getProperty "java.io.tmpdir") (str "deps-deploy-" (System/nanoTime)))
                        _ (.mkdirs dir)
                        jar-copy (io/file dir jar-name)
                        pom-copy (io/file dir pom-name)

@@ -1,8 +1,8 @@
-(ns babashka.publish-jar.settings
+(ns babashka.deps-deploy.settings
   "The parts of ~/.m2/settings.xml that publishing needs: the servers and
   their credentials, with ${env.NAME} and system properties interpolated
   the way Maven does."
-  (:require [babashka.publish-jar.cipher :as cipher]
+  (:require [babashka.deps-deploy.cipher :as cipher]
             [clojure.data.xml :as xml]
             [clojure.java.io :as io]
             [clojure.string :as str]))

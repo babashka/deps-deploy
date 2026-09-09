@@ -1,8 +1,8 @@
-(ns babashka.publish-jar-test
-  (:require [babashka.publish-jar :as publish]
-            [babashka.publish-jar.cipher :as cipher]
-            [babashka.publish-jar.gpg :as gpg]
-            [babashka.publish-jar.settings :as settings]
+(ns babashka.deps-deploy-test
+  (:require [babashka.deps-deploy :as publish]
+            [babashka.deps-deploy.cipher :as cipher]
+            [babashka.deps-deploy.gpg :as gpg]
+            [babashka.deps-deploy.settings :as settings]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -65,7 +65,7 @@
     "/org/example/demo/maven-metadata.xml.sha1"})
 
 (deftest deploy-test
-  (let [dir (temp-dir "publish-jar")
+  (let [dir (temp-dir "deps-deploy")
         jar (io/file dir "demo.jar")
         pom-file (io/file dir "pom.xml")
         _ (spit jar "not really a jar")
@@ -116,7 +116,7 @@
       (finally (stop)))))
 
 (deftest install-test
-  (let [dir (temp-dir "publish-jar-install")
+  (let [dir (temp-dir "deps-deploy-install")
         jar (io/file dir "demo.jar")
         pom-file (io/file dir "pom.xml")
         repo (io/file dir "m2")]
@@ -135,7 +135,7 @@
   (is (thrown-with-msg? Exception #"Missing :artifact" (publish/deploy {})))
   (is (thrown-with-msg? Exception #"Unknown :installer :nope" (publish/deploy {:artifact "x" :installer :nope})))
   (is (thrown-with-msg? Exception #"No such file: x" (publish/deploy {:artifact "x"})))
-  (let [dir (temp-dir "publish-jar-options")
+  (let [dir (temp-dir "deps-deploy-options")
         jar (io/file dir "demo.jar")
         pom-file (io/file dir "pom.xml")]
     (spit jar "jar")
@@ -171,14 +171,14 @@
         (when (zero? exit) (str script))))))
 
 (deftest sign-test
-  (let [dir (temp-dir "publish-jar-sign")]
+  (let [dir (temp-dir "deps-deploy-sign")]
     (if-let [gpg-script (throwaway-gpg dir)]
       (let [jar (io/file dir "demo.jar")
             pom-file (io/file dir "pom.xml")
             {:keys [store stop url]} (fake-repo "Basic dXNlcjpzZWNyZXQ=")]
         (spit jar "jar")
         (spit pom-file pom)
-        (System/setProperty "publish-jar.gpg" gpg-script)
+        (System/setProperty "deps-deploy.gpg" gpg-script)
         (try
           (let [uploaded (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :sign-releases? true
                                           :repository {:url url :username "user" :password "secret"}})]
@@ -190,15 +190,15 @@
                                   (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :sign-releases? true
                                                    :sign-key-id "nobody@example.com"
                                                    :repository {:url url :username "user" :password "secret"}}))))
-          (finally (System/clearProperty "publish-jar.gpg") (stop))))
+          (finally (System/clearProperty "deps-deploy.gpg") (stop))))
       (println "gpg unavailable, skipping sign-test"))))
 
 (deftest gpg-missing-test
-  (System/setProperty "publish-jar.gpg" (str (io/file (temp-dir "publish-jar-nogpg") "gpg-that-is-not-there")))
+  (System/setProperty "deps-deploy.gpg" (str (io/file (temp-dir "deps-deploy-nogpg") "gpg-that-is-not-there")))
   (try
     (is (thrown-with-msg? Exception #"Could not run .*gpg-that-is-not-there"
                           (gpg/sign! (io/file (System/getProperty "java.io.tmpdir") "x") {})))
-    (finally (System/clearProperty "publish-jar.gpg"))))
+    (finally (System/clearProperty "deps-deploy.gpg"))))
 
 (deftest settings-test
   (let [f (io/file (System/getProperty "java.io.tmpdir") (str "settings-" (System/nanoTime) ".xml"))]

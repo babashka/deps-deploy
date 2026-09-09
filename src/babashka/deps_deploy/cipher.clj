@@ -1,4 +1,4 @@
-(ns babashka.publish-jar.cipher
+(ns babashka.deps-deploy.cipher
   "Encrypted passwords in settings.xml, as Maven and tools.deps read them:
   the legacy format of plexus-cipher and plexus-sec-dispatcher 2.0. A
   password is a {...} blob: base64 of an 8-byte salt, one byte of pad
