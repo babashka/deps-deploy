@@ -1,11 +1,11 @@
 (ns babashka.deps-deploy
   "Deploys a jar and its POM to a Maven repository, or installs them in
   ~/.m2. Plain HTTP with basic auth, no Maven, so it runs on the JVM and in
-  babashka. The options are deps-deploy's, so a build.clj moves by
-  changing its require."
-  (:require [babashka.http-client :as http]
-            [babashka.deps-deploy.gpg :as gpg]
+  babashka. A stand-in for slipset/deps-deploy with its options, so a
+  build.clj moves by changing one symbol."
+  (:require [babashka.deps-deploy.gpg :as gpg]
             [babashka.deps-deploy.settings :as settings]
+            [babashka.http-client :as http]
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.security MessageDigest]))
