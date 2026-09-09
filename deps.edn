@@ -6,4 +6,13 @@
          :extra-deps {io.github.cognitect-labs/test-runner {:git/sha "9d36f36ff541dac680a05010e4348c744333f191"}
                       http-kit/http-kit {:mvn/version "2.8.0"}}
          :main-opts ["-m" "cognitect.test-runner"]
-         :exec-fn cognitect.test-runner.api/test}}}
+         :exec-args {:nses [babashka.deps-deploy-test]}
+         :exec-fn cognitect.test-runner.api/test}
+  ;; the comparison with slipset/deps-deploy, Aether underneath: JVM only
+  :aether-test {:extra-paths ["test"]
+                :extra-deps {io.github.cognitect-labs/test-runner {:git/sha "9d36f36ff541dac680a05010e4348c744333f191"}
+                             http-kit/http-kit {:mvn/version "2.8.0"}
+                             io.github.clojure/tools.build {:mvn/version "0.10.14"}
+                             slipset/deps-deploy {:mvn/version "0.2.5"}}
+                :exec-args {:nses [babashka.deps-deploy.aether-test]}
+                :exec-fn cognitect.test-runner.api/test}}}

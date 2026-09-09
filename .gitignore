@@ -3,3 +3,4 @@
 .lsp/
 target/
 *.jar
+test-resources/test-lib/target/

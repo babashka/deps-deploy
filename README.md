@@ -48,7 +48,7 @@ clojure -M -m babashka.deps-deploy deploy target/lib.jar
 
 | option             | meaning                                                                                   |
 |--------------------|-------------------------------------------------------------------------------------------|
-| `:artifact`        | the jar, required; uploaded as `artifact-version.jar`, or `artifact-version-classifier.jar` when its name has that shape |
+| `:artifact`        | the jar, required; uploaded as `artifact-version.jar`, or `artifact-version-classifier.jar` when its name has that shape. A vector of paths publishes several jars, a `-sources` one say, in one go |
 | `:pom-file`        | the POM, default `pom.xml`                                                                |
 | `:installer`       | `:remote`, the default, or `:local`                                                       |
 | `:repository`      | nothing for Clojars; a URL; `{:url ... :id ... :username ... :password ...}`; or `{"id" {:url ...}}` as deps-deploy has it |

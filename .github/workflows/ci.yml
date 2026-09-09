@@ -20,5 +20,7 @@ jobs:
           bb: latest
       - name: Test on the JVM
         run: clojure -X:test
+      - name: Compare uploads with slipset/deps-deploy
+        run: clojure -X:aether-test
       - name: Test with bb
         run: bb test

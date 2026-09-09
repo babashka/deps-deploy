@@ -82,7 +82,8 @@
 
 (defn updated-metadata
   "maven-metadata.xml with version added: the existing versions kept in
-  order, version appended once, latest and release set to it."
+  order, version appended once, release set to it. The shape is Aether's,
+  which writes no latest for releases."
   [existing group artifact version]
   (let [old (when existing (map second (re-seq #"<version>([^<]+)</version>" existing)))
         versions (distinct (concat old [version]))]
@@ -91,7 +92,6 @@
          "  <groupId>" group "</groupId>\n"
          "  <artifactId>" artifact "</artifactId>\n"
          "  <versioning>\n"
-         "    <latest>" version "</latest>\n"
          "    <release>" version "</release>\n"
          "    <versions>\n"
          (apply str (map #(str "      <version>" % "</version>\n") versions))
@@ -141,28 +141,31 @@
 (defn- read-bytes [file]
   (with-open [in (io/input-stream file)] (.readAllBytes in)))
 
+(defn- artifacts
+  "The :artifact option as a sequence: one jar or several."
+  [artifact]
+  (if (or (string? artifact) (instance? java.io.File artifact)) [artifact] (seq artifact)))
+
 (defn- files
-  "The files to publish as [name bytes] pairs: the jar under its Maven
+  "The files to publish as [name bytes] pairs: each jar under its Maven
   name, the POM, and with :sign-releases? a gpg signature for each."
   [{:keys [artifact sign-releases? sign-key-id read-passphrase?]} coords pom-text]
   (let [{:keys [artifact-id version]} coords
-        stem (str artifact-id "-" version (some->> (classifier coords artifact) (str "-")))
-        jar-name (str stem ".jar")
+        jar-name (fn [jar] (str artifact-id "-" version (some->> (classifier coords jar) (str "-")) ".jar"))
         pom-name (str artifact-id "-" version ".pom")
+        plain (conj (mapv (fn [jar] [(jar-name jar) (read-bytes jar)]) (artifacts artifact))
+                    [pom-name (.getBytes ^String pom-text "UTF-8")])
         signed (when sign-releases?
                  (let [dir (io/file (System/getProperty "java.io.tmpdir") (str "deps-deploy-" (System/nanoTime)))
-                       _ (.mkdirs dir)
-                       jar-copy (io/file dir jar-name)
-                       pom-copy (io/file dir pom-name)
                        gpg-opts {:key-id sign-key-id
                                  :passphrase (when read-passphrase? (gpg/read-passphrase))}]
-                   (io/copy (io/file artifact) jar-copy)
-                   (spit pom-copy pom-text)
-                   [[(str jar-name ".asc") (read-bytes (gpg/sign! jar-copy gpg-opts))]
-                    [(str pom-name ".asc") (read-bytes (gpg/sign! pom-copy gpg-opts))]]))]
-    (into [[jar-name (read-bytes artifact)]
-           [pom-name (.getBytes ^String pom-text "UTF-8")]]
-          signed)))
+                   (.mkdirs dir)
+                   (mapv (fn [[name ^bytes bytes]]
+                           (let [copy (io/file dir name)]
+                             (io/copy bytes copy)
+                             [(str name ".asc") (read-bytes (gpg/sign! copy gpg-opts))]))
+                         plain)))]
+    (into plain signed)))
 
 (defn- version-path [{:keys [group artifact-id version]}]
   (str (str/replace group "." "/") "/" artifact-id "/" version "/"))
@@ -220,7 +223,8 @@
 
     :artifact         path to the jar, required; uploaded as
                       artifact-version.jar, or artifact-version-classifier.jar
-                      when its name has that shape
+                      when its name has that shape. A vector of paths
+                      publishes several jars, a -sources one say, in one go
     :pom-file         path to the POM, default \"pom.xml\"
     :installer        :remote, the default, or :local
     :repository       nil for Clojars; a URL; {:url :id :username :password};
@@ -244,7 +248,8 @@
   (when-not artifact (throw (ex-info "Missing :artifact, the jar to deploy" {})))
   (when-not (#{:remote :local} installer)
     (throw (ex-info (str "Unknown :installer " (pr-str installer) ", use :remote or :local") {:installer installer})))
-  (when-not (.exists (io/file artifact)) (throw (ex-info (str "No such file: " artifact) {:artifact artifact})))
+  (doseq [jar (artifacts artifact)]
+    (when-not (.exists (io/file jar)) (throw (ex-info (str "No such file: " jar) {:artifact jar}))))
   (when-not (.exists (io/file pom-file)) (throw (ex-info (str "No such file: " pom-file) {:pom-file pom-file})))
   (let [pom-text (slurp pom-file)
         {:keys [group artifact version] :as coords} (coordinates pom-text)
