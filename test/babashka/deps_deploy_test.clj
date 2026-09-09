@@ -45,17 +45,21 @@
     (is (= 1 (count (re-seq #"<version>1\.1\.0</version>" (publish/updated-metadata again "org.example" "demo" "1.1.0"))))
         "republishing a version lists it once")))
 
-;; A repository: every PUT is remembered by path, GET serves what was put.
+;; A repository: every PUT is remembered by path, GET serves what was put,
+;; and a path in refuse gets that response instead.
 (defn- fake-repo [auth-header]
   (let [store (atom {})
+        refuse (atom {})
         handler (fn [{:keys [request-method uri headers body]}]
                   (cond
                     (not= auth-header (get headers "authorization")) {:status 401 :body "who?"}
+                    (get @refuse uri) (get @refuse uri)
                     (= :put request-method) (do (swap! store assoc uri (slurp body)) {:status 201})
                     (= :get request-method) (if-let [b (get @store uri)] {:status 200 :body b} {:status 404})
                     :else {:status 405}))
         srv (server/run-server handler {:port 0 :legacy-return-value? false})]
-    {:store store :stop #(server/server-stop! srv) :url (str "http://localhost:" (server/server-port srv) "/")}))
+    {:store store :refuse refuse :stop #(server/server-stop! srv)
+     :url (str "http://localhost:" (server/server-port srv) "/")}))
 
 (def version-paths
   #{"/org/example/demo/1.2.3/demo-1.2.3.jar" "/org/example/demo/1.2.3/demo-1.2.3.jar.md5"
@@ -70,7 +74,7 @@
         pom-file (io/file dir "pom.xml")
         _ (spit jar "not really a jar")
         _ (spit pom-file pom)
-        {:keys [store stop url]} (fake-repo "Basic dXNlcjpzZWNyZXQ=")]
+        {:keys [store refuse stop url]} (fake-repo "Basic dXNlcjpzZWNyZXQ=")]
     (try
       (testing "credentials in the repository map, jar renamed to artifact-version.jar"
         (let [uploaded (publish/deploy {:artifact (str jar) :pom-file (str pom-file)
@@ -108,12 +112,74 @@
                               (publish/deploy {:artifact (str jar) :pom-file (str pom-file)
                                                :repository {:url url :id "fake" :username "" :password ""}
                                                :settings (str (io/file dir "none.xml"))}))))
-      (testing "a snapshot is refused"
-        (spit pom-file (str/replace pom "1.2.3" "1.2.3-SNAPSHOT"))
-        (is (thrown-with-msg? Exception #"SNAPSHOT"
+      (testing "Clojars' validation error is spelled out"
+        (swap! refuse assoc "/org/example/demo/1.2.3/demo-1.2.3.pom"
+               {:status 403 :body "{\"type\":\"https://clojars.org/validation-error\",\"status\":403,\"title\":\"Non-SNAPSHOT redeploy\",\"detail\":\"redeploying non-snapshots is not allowed. See https://bit.ly/3EYzhwT\"}"})
+        (is (thrown-with-msg? Exception #"HTTP 403 Non-SNAPSHOT redeploy: redeploying non-snapshots is not allowed. See"
                               (publish/deploy {:artifact (str jar) :pom-file (str pom-file)
-                                               :repository {:url url :username "user" :password "secret"}}))))
+                                               :repository {:url url :username "user" :password "secret"}})))
+        (reset! refuse {}))
       (finally (stop)))))
+
+(deftest snapshot-test
+  (let [dir (temp-dir "deps-deploy-snapshot")
+        jar (io/file dir "demo.jar")
+        sources (io/file dir "demo-1.2.3-SNAPSHOT-sources.jar")
+        pom-file (io/file dir "pom.xml")
+        _ (spit jar "jar")
+        _ (spit sources "sources")
+        _ (spit pom-file (str/replace pom "1.2.3" "1.2.3-SNAPSHOT"))
+        {:keys [store stop url]} (fake-repo "Basic dXNlcjpzZWNyZXQ=")
+        repository {:url url :username "user" :password "secret"}
+        version-dir "/org/example/demo/1.2.3-SNAPSHOT/"
+        names (fn [] (->> (keys @store) (filter #(str/starts-with? % version-dir)) (map #(subs % (count version-dir))) set))]
+    (try
+      (testing "the first build"
+        (let [uploaded (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :repository repository})]
+          (is (= 12 (count uploaded)) "pom, jar, the version's and the artifact's metadata, each with two checksums")
+          (is (some #(re-find #"demo-1\.2\.3-\d{8}\.\d{6}-1\.jar$" %) uploaded) "the jar goes up under a timestamped name, build 1")
+          (let [meta (get @store (str version-dir "maven-metadata.xml"))]
+            (is (str/includes? meta "<buildNumber>1</buildNumber>"))
+            (is (str/includes? meta "<extension>jar</extension>"))
+            (is (str/includes? meta "<version>1.2.3-SNAPSHOT</version>")))
+          (let [meta (get @store "/org/example/demo/maven-metadata.xml")]
+            (is (str/includes? meta "<version>1.2.3-SNAPSHOT</version>"))
+            (is (not (str/includes? meta "<release>")) "a snapshot sets no release"))))
+      (testing "the second build, with a sources jar, replaces the first's pom and jar entries"
+        (publish/deploy {:artifact [(str jar) (str sources)] :pom-file (str pom-file) :repository repository})
+        (let [meta (get @store (str version-dir "maven-metadata.xml"))]
+          (is (str/includes? meta "<buildNumber>2</buildNumber>"))
+          (is (= 3 (count (re-seq #"<snapshotVersion>" meta))) "pom, jar and sources")
+          (is (str/includes? meta "<classifier>sources</classifier>"))
+          (is (= 2 (count (filter #(re-find #"-2(-sources)?\.jar$" %) (names)))) "two jars in build 2")
+          (is (= 1 (count (filter #(re-find #"-1\.jar$" %) (names)))) "build 1's jar stays in the repository")))
+      (testing "an entry the new build does not replace is kept"
+        (let [meta (publish/snapshot-metadata (get @store (str version-dir "maven-metadata.xml"))
+                                              "org.example" "demo" "1.2.3-SNAPSHOT"
+                                              {:timestamp "20990101.000000" :updated "20990101000000"} 3
+                                              ["demo-1.2.3-20990101.000000-3.pom"])]
+          (is (= 3 (count (re-seq #"<snapshotVersion>" meta))))
+          (is (str/includes? meta "<value>1.2.3-20990101.000000-3</value>"))
+          (is (re-find #"<classifier>sources</classifier>\s*<extension>jar</extension>\s*<value>1.2.3-\d{8}\.\d{6}-2</value>" meta)
+              "the sources entry keeps build 2's value")))
+      (finally (stop)))))
+
+(deftest install-snapshot-test
+  (let [dir (temp-dir "deps-deploy-install-snapshot")
+        jar (io/file dir "demo.jar")
+        pom-file (io/file dir "pom.xml")
+        repo (io/file dir "m2")]
+    (spit jar "jar")
+    (spit pom-file (str/replace pom "1.2.3" "1.2.3-SNAPSHOT"))
+    (System/setProperty "maven.repo.local" (str repo))
+    (try
+      (let [written (publish/deploy {:installer :local :artifact (str jar) :pom-file (str pom-file)})]
+        (is (= 4 (count written)) "pom, jar, the version's and the artifact's local metadata")
+        (is (.exists (io/file repo "org/example/demo/1.2.3-SNAPSHOT/demo-1.2.3-SNAPSHOT.jar")) "installed under the plain version")
+        (let [meta (slurp (io/file repo "org/example/demo/1.2.3-SNAPSHOT/maven-metadata-local.xml"))]
+          (is (str/includes? meta "<localCopy>true</localCopy>"))
+          (is (str/includes? meta "<value>1.2.3-SNAPSHOT</value>"))))
+      (finally (System/clearProperty "maven.repo.local")))))
 
 (deftest install-test
   (let [dir (temp-dir "deps-deploy-install")
@@ -186,7 +252,7 @@
             (is (str/starts-with? (get @store "/org/example/demo/1.2.3/demo-1.2.3.jar.asc") "-----BEGIN PGP SIGNATURE-----"))
             (is (contains? @store "/org/example/demo/1.2.3/demo-1.2.3.pom.asc.sha1")))
           (testing "a wrong key names gpg's complaint"
-            (is (thrown-with-msg? Exception #"gpg failed to sign .*demo-1.2.3.jar \(exit \d+\)"
+            (is (thrown-with-msg? Exception #"gpg failed to sign .*demo-1.2.3.pom \(exit \d+\)"
                                   (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :sign-releases? true
                                                    :sign-key-id "nobody@example.com"
                                                    :repository {:url url :username "user" :password "secret"}}))))

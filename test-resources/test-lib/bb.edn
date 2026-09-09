@@ -8,4 +8,11 @@
                       flags (set flags)]
                   (build/deploy {:version version
                                  :sources (contains? flags "sources")
-                                 :sign (contains? flags "sign")}))}}}
+                                 :sign (contains? flags "sign")}))}
+  deploy-built {:doc "Deploy a jar already built under target, without tools.build: bb deploy-built 0.0.0-SNAPSHOT [sources]"
+                :task (let [[version & flags] *command-line-args*
+                            jar (fn [suffix] (str "target/deps-deploy-test-lib-" version suffix ".jar"))]
+                        (run! println
+                              ((requiring-resolve 'babashka.deps-deploy/deploy)
+                               {:artifact (cond-> [(jar "")] (contains? (set flags) "sources") (conj (jar "-sources")))
+                                :pom-file "target/classes/META-INF/maven/io.github.babashka/deps-deploy-test-lib/pom.xml"})))}}}

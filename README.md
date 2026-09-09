@@ -62,8 +62,14 @@ clojure -M -m babashka.deps-deploy deploy target/lib.jar
 Uploads each file with an `.md5` and `.sha1` next to it, the signatures
 included, then the artifact's `maven-metadata.xml` with the version added.
 Returns the URLs uploaded, or with `:installer :local` the files written,
-in order. Throws on the first transfer that fails, with the URL and the
-HTTP status.
+in order. Throws on the first transfer that fails, with the URL, the HTTP
+status and what the repository said.
+
+A `-SNAPSHOT` version goes up the way Maven does it: the files under a
+timestamped name with the next build number, the version's own
+`maven-metadata.xml` updated first, then the artifact's. Every upload is
+compared byte for byte with what slipset/deps-deploy sends, Aether
+underneath, in the test suite.
 
 ## Credentials
 
@@ -96,7 +102,6 @@ names another gpg program.
 - `:repository` strings are URLs, not aliases into `deps.edn`'s `:mvn/repos`.
 - `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` apply to Clojars only, not to every repository.
 - No S3 repositories.
-- Snapshots are refused for now.
 
 ## License
 

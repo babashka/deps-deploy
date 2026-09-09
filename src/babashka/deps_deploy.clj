@@ -52,6 +52,16 @@
   (cond-> {:throw false}
     auth (assoc :basic-auth auth)))
 
+(defn- explain
+  "The response body for an error message: Clojars' validation error as
+  its title and detail, anything else trimmed."
+  [body]
+  (let [body (str/trim (str body))
+        field (fn [name] (second (re-find (re-pattern (str "\"" name "\":\"([^\"]*)\"")) body)))]
+    (cond (str/blank? body) ""
+          (str/includes? body "clojars.org/validation-error") (str " " (field "title") ": " (field "detail"))
+          :else (str " " body))))
+
 (defn- put!
   "PUTs bytes to url. Throws with the status and body on anything but 2xx."
   [url auth ^bytes body]
@@ -61,8 +71,7 @@
                                                        :body body
                                                        :headers {"Content-Type" "application/octet-stream"}))]
     (when-not (<= 200 status 299)
-      (throw (ex-info (str "Could not transfer " url ": HTTP " status
-                           (let [b (str/trim (str (:body resp)))] (when-not (str/blank? b) (str " " b))))
+      (throw (ex-info (str "Could not transfer " url ": HTTP " status (explain (:body resp)))
                       {:url url :status status :body (:body resp)})))
     url))
 
@@ -76,28 +85,100 @@
 
 ;;;; metadata
 
-(defn- stamp []
-  (.format (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")
-           (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC)))
+(defn snapshot? [version]
+  (str/ends-with? (str version) "-SNAPSHOT"))
+
+(defn- now
+  "The moment of a deploy, as Maven writes it: :updated for lastUpdated,
+  :timestamp for snapshot file names."
+  []
+  (let [t (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC)
+        fmt (fn [p] (.format (java.time.format.DateTimeFormatter/ofPattern p) t))]
+    {:updated (fmt "yyyyMMddHHmmss") :timestamp (fmt "yyyyMMdd.HHmmss")}))
 
 (defn updated-metadata
-  "maven-metadata.xml with version added: the existing versions kept in
-  order, version appended once, release set to it. The shape is Aether's,
-  which writes no latest for releases."
-  [existing group artifact version]
-  (let [old (when existing (map second (re-seq #"<version>([^<]+)</version>" existing)))
-        versions (distinct (concat old [version]))]
+  "The artifact's maven-metadata.xml with version added: the existing
+  versions kept in order, version appended once, release set to it for a
+  release and kept as it was for a snapshot. The shape is Aether's, which
+  writes no latest."
+  ([existing group artifact version] (updated-metadata existing group artifact version (:updated (now))))
+  ([existing group artifact version updated]
+   (let [old (when existing (map second (re-seq #"<version>([^<]+)</version>" existing)))
+         versions (distinct (concat old [version]))
+         release (if (snapshot? version)
+                   (when existing (second (re-find #"<release>([^<]+)</release>" existing)))
+                   version)]
+     (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+          "<metadata>\n"
+          "  <groupId>" group "</groupId>\n"
+          "  <artifactId>" artifact "</artifactId>\n"
+          "  <versioning>\n"
+          (when release (str "    <release>" release "</release>\n"))
+          "    <versions>\n"
+          (apply str (map #(str "      <version>" % "</version>\n") versions))
+          "    </versions>\n"
+          "    <lastUpdated>" updated "</lastUpdated>\n"
+          "  </versioning>\n"
+          "</metadata>\n"))))
+
+(defn- build-number
+  "The buildNumber in a snapshot's maven-metadata.xml, 0 without one."
+  [existing]
+  (or (some-> existing (->> (re-find #"<buildNumber>(\d+)</buildNumber>") second) parse-long) 0))
+
+(defn- snapshot-entry
+  "The classifier and extension of a snapshot file name, given the stem
+  artifact-version it starts with."
+  [stem name]
+  (let [rest (subs name (count stem))
+        [_ classifier extension] (re-matches #"(?:-([^.]+))?\.(.+)" rest)]
+    {:classifier classifier :extension extension}))
+
+(defn- old-snapshot-entries [existing]
+  (when existing
+    (for [entry (re-seq #"(?s)<snapshotVersion>(.*?)</snapshotVersion>" existing)
+          :let [text (second entry)
+                get (fn [tag] (second (re-find (re-pattern (str "<" tag ">([^<]+)</" tag ">")) text)))]]
+      {:classifier (get "classifier") :extension (get "extension") :value (get "value") :updated (get "updated")})))
+
+(defn- snapshot-value
+  "The timestamped version a snapshot's files carry: 1.0.0-SNAPSHOT
+  deployed as build 3 is 1.0.0-20260909.215341-3."
+  [version {:keys [timestamp]} build]
+  (str (subs version 0 (- (count version) (count "-SNAPSHOT"))) "-" timestamp "-" build))
+
+(defn snapshot-metadata
+  "The version's maven-metadata.xml after a snapshot deploy, as Aether
+  writes it: the new build's timestamp and number, one snapshotVersion per
+  file uploaded in this deploy, then the earlier entries this deploy did
+  not replace."
+  [existing group artifact version {:keys [timestamp updated] :as moment} build names]
+  (let [value (snapshot-value version moment build)
+        stem (str artifact "-" value)
+        fresh (map #(assoc (snapshot-entry stem %) :value value :updated updated) names)
+        superseded (set (map (juxt :classifier :extension) fresh))
+        kept (remove #(superseded ((juxt :classifier :extension) %)) (old-snapshot-entries existing))]
     (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-         "<metadata>\n"
+         "<metadata modelVersion=\"1.1.0\">\n"
          "  <groupId>" group "</groupId>\n"
          "  <artifactId>" artifact "</artifactId>\n"
          "  <versioning>\n"
-         "    <release>" version "</release>\n"
-         "    <versions>\n"
-         (apply str (map #(str "      <version>" % "</version>\n") versions))
-         "    </versions>\n"
-         "    <lastUpdated>" (stamp) "</lastUpdated>\n"
+         "    <lastUpdated>" updated "</lastUpdated>\n"
+         "    <snapshot>\n"
+         "      <timestamp>" timestamp "</timestamp>\n"
+         "      <buildNumber>" build "</buildNumber>\n"
+         "    </snapshot>\n"
+         "    <snapshotVersions>\n"
+         (apply str (for [{:keys [classifier extension value updated]} (concat fresh kept)]
+                      (str "      <snapshotVersion>\n"
+                           (when classifier (str "        <classifier>" classifier "</classifier>\n"))
+                           "        <extension>" extension "</extension>\n"
+                           "        <value>" value "</value>\n"
+                           "        <updated>" updated "</updated>\n"
+                           "      </snapshotVersion>\n")))
+         "    </snapshotVersions>\n"
          "  </versioning>\n"
+         "  <version>" version "</version>\n"
          "</metadata>\n")))
 
 ;;;; repositories and credentials
@@ -158,14 +239,15 @@
         :else nil))
 
 (defn- files
-  "The files to publish as [name bytes] pairs: each jar under its Maven
-  name, the POM, and with :sign-releases? a gpg signature for each."
-  [{:keys [artifact sign-releases? sign-key-id] :as options} coords pom-text]
-  (let [{:keys [artifact-id version]} coords
-        jar-name (fn [jar] (str artifact-id "-" version (some->> (classifier coords jar) (str "-")) ".jar"))
-        pom-name (str artifact-id "-" version ".pom")
-        plain (conj (mapv (fn [jar] [(jar-name jar) (read-bytes jar)]) (artifacts artifact))
-                    [pom-name (.getBytes ^String pom-text "UTF-8")])
+  "The files to publish as [name bytes] pairs: the POM, each jar under its
+  Maven name, and with :sign-releases? a gpg signature for each. The names
+  carry file-version: the version, or a snapshot's timestamped one."
+  [{:keys [artifact sign-releases? sign-key-id] :as options} coords pom-text file-version]
+  (let [{:keys [artifact-id]} coords
+        jar-name (fn [jar] (str artifact-id "-" file-version (some->> (classifier coords jar) (str "-")) ".jar"))
+        pom-name (str artifact-id "-" file-version ".pom")
+        plain (into [[pom-name (.getBytes ^String pom-text "UTF-8")]]
+                    (map (fn [jar] [(jar-name jar) (read-bytes jar)])) (artifacts artifact))
         signed (when sign-releases?
                  (let [dir (io/file (System/getProperty "java.io.tmpdir") (str "deps-deploy-" (System/nanoTime)))
                        gpg-opts {:key-id sign-key-id :passphrase (passphrase options)}]
@@ -182,23 +264,33 @@
 
 ;;;; remote
 
-(defn- deploy-remote [{:keys [settings] :as options} coords pom-text]
+(defn- deploy-remote
+  "Uploads the files, a snapshot's version-level maven-metadata.xml, then
+  the artifact's maven-metadata.xml, each with md5 and sha1 sidecars."
+  [{:keys [settings] :as options} coords pom-text]
   (let [repo (repository (:repository options))
         {:keys [username password]} (credentials repo settings)
         auth [username password]
         {:keys [group artifact-id version]} coords
-        base (str (with-slash (:url repo)) (version-path coords))
-        artifact-base (str (with-slash (:url repo)) (str/replace group "." "/") "/" artifact-id "/")
+        version-url (str (with-slash (:url repo)) (version-path coords))
+        metadata-url (str (with-slash (:url repo)) (str/replace group "." "/") "/" artifact-id "/maven-metadata.xml")
         upload! (fn [url ^bytes body]
                   [(put! url auth body)
                    (put! (str url ".md5") auth (.getBytes ^String (digest "MD5" body) "UTF-8"))
                    (put! (str url ".sha1") auth (.getBytes ^String (digest "SHA-1" body) "UTF-8"))])
-        to-upload (files options coords pom-text)
-        metadata-url (str artifact-base "maven-metadata.xml")
-        metadata (updated-metadata (get-text metadata-url auth) group artifact-id version)]
+        moment (now)
+        snapshot (snapshot? version)
+        old-snapshot (when snapshot (get-text (str version-url "maven-metadata.xml") auth))
+        build (inc (build-number old-snapshot))
+        file-version (if snapshot (snapshot-value version moment build) version)
+        to-upload (files options coords pom-text file-version)
+        metadata (updated-metadata (get-text metadata-url auth) group artifact-id version (:updated moment))]
     (println "Deploying" (str group "/" artifact-id "-" version) "to" (or (:id repo) (:url repo)) "as" username)
     (into []
-          (concat (mapcat (fn [[name bytes]] (upload! (str base name) bytes)) to-upload)
+          (concat (mapcat (fn [[name bytes]] (upload! (str version-url name) bytes)) to-upload)
+                  (when snapshot
+                    (upload! (str version-url "maven-metadata.xml")
+                             (.getBytes ^String (snapshot-metadata old-snapshot group artifact-id version moment build (map first to-upload)) "UTF-8")))
                   (upload! metadata-url (.getBytes ^String metadata "UTF-8"))))))
 
 ;;;; local
@@ -210,19 +302,57 @@
     (io/file p)
     (io/file (System/getProperty "user.home") ".m2" "repository")))
 
-(defn- deploy-local [options coords pom-text]
+(defn- local-snapshot-metadata
+  "The version's maven-metadata-local.xml for an installed snapshot: a
+  local copy under the plain version, as Maven's install writes it."
+  [group artifact version updated names]
+  (let [stem (str artifact "-" version)]
+    (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<metadata modelVersion=\"1.1.0\">\n"
+         "  <groupId>" group "</groupId>\n"
+         "  <artifactId>" artifact "</artifactId>\n"
+         "  <versioning>\n"
+         "    <lastUpdated>" updated "</lastUpdated>\n"
+         "    <snapshot>\n"
+         "      <localCopy>true</localCopy>\n"
+         "    </snapshot>\n"
+         "    <snapshotVersions>\n"
+         (apply str (for [name names
+                          :let [{:keys [classifier extension]} (snapshot-entry stem name)]]
+                      (str "      <snapshotVersion>\n"
+                           (when classifier (str "        <classifier>" classifier "</classifier>\n"))
+                           "        <extension>" extension "</extension>\n"
+                           "        <value>" version "</value>\n"
+                           "        <updated>" updated "</updated>\n"
+                           "      </snapshotVersion>\n")))
+         "    </snapshotVersions>\n"
+         "  </versioning>\n"
+         "  <version>" version "</version>\n"
+         "</metadata>\n")))
+
+(defn- deploy-local
+  "Writes the files under the plain version, a snapshot's version-level
+  maven-metadata-local.xml, then the artifact's maven-metadata-local.xml."
+  [options coords pom-text]
   (let [{:keys [group artifact-id version]} coords
         dir (io/file (local-repository) (version-path coords))
         artifact-dir (.getParentFile dir)
-        metadata (io/file artifact-dir "maven-metadata-local.xml")]
+        metadata (io/file artifact-dir "maven-metadata-local.xml")
+        {:keys [updated]} (now)
+        to-write (files options coords pom-text version)]
     (println "Installing" (str group "/" artifact-id "-" version) "in" (str (local-repository)))
     (.mkdirs dir)
     (let [written (mapv (fn [[name ^bytes bytes]]
                           (let [f (io/file dir name)]
                             (io/copy bytes f)
                             (str f)))
-                        (files options coords pom-text))]
-      (spit metadata (updated-metadata (when (.exists metadata) (slurp metadata)) group artifact-id version))
+                        to-write)
+          written (if (snapshot? version)
+                    (let [f (io/file dir "maven-metadata-local.xml")]
+                      (spit f (local-snapshot-metadata group artifact-id version updated (map first to-write)))
+                      (conj written (str f)))
+                    written)]
+      (spit metadata (updated-metadata (when (.exists metadata) (slurp metadata)) group artifact-id version updated))
       (conj written (str metadata)))))
 
 ;;;; entry points
@@ -253,9 +383,11 @@
   CLOJARS_URL replaces the Clojars URL. Blank values count as unset.
 
   Uploads each file with an md5 and sha1 next to it, then the artifact's
-  maven-metadata.xml with the version added. Returns the URLs uploaded, or
-  the files written, in order. Throws on the first failure, with the URL
-  and status."
+  maven-metadata.xml with the version added. A -SNAPSHOT version goes up
+  under a timestamped name with the next build number, and the version's
+  own maven-metadata.xml is updated before the artifact's. Returns the
+  URLs uploaded, or the files written, in order. Throws on the first
+  failure, with the URL and status."
   [{:keys [artifact pom-file installer] :or {pom-file "pom.xml" installer :remote} :as options}]
   (when-not artifact (throw (ex-info "Missing :artifact, the jar to deploy" {})))
   (when-not (#{:remote :local} installer)
@@ -269,8 +401,6 @@
         options (assoc options :pom-file pom-file :installer installer)]
     (when (some str/blank? [group artifact version])
       (throw (ex-info (str "No coordinates in " pom-file) {:pom-file pom-file :coordinates coords})))
-    (when (str/ends-with? version "-SNAPSHOT")
-      (throw (ex-info "SNAPSHOT versions are not supported yet" {:version version})))
     (if (= :local installer)
       (deploy-local options coords pom-text)
       (deploy-remote options coords pom-text))))
