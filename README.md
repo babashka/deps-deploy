@@ -1,13 +1,11 @@
 # deps-deploy
 
-A stand-in for [slipset/deps-deploy](https://github.com/slipset/deps-deploy)
-that runs in [babashka](https://github.com/babashka/babashka) as well as
-on the JVM. Deploys a jar and its POM to a Maven repository, Clojars first,
-or installs them in `~/.m2`. Plain Clojure over `babashka.http-client`, no
-Maven underneath.
+Deploy jars and POM files to Clojars or another Maven repository, or install
+them in `~/.m2/repository`. Runs in
+[babashka](https://github.com/babashka/babashka) and on the JVM.
 
-Same options, same `-main`. A `build.clj` moves over by changing one
-symbol:
+To migrate from [slipset/deps-deploy](https://github.com/slipset/deps-deploy),
+change the function name in your `build.clj`:
 
 ```clojure
 ;; before
@@ -16,70 +14,91 @@ symbol:
 ((requiring-resolve 'babashka.deps-deploy/deploy) opts)
 ```
 
+The options and command-line arguments are compatible, with the
+[differences listed below](#differences-from-slipsetdeps-deploy).
+
 ## Usage
 
+Add this dependency to the `:deps` map in your `deps.edn` or `bb.edn`:
+
 ```clojure
-;; deps.edn or bb.edn
 io.github.babashka/deps-deploy {:mvn/version "0.0.1"}
 ```
+
+To deploy to Clojars, set `CLOJARS_USERNAME` and `CLOJARS_PASSWORD`.
+Use a Clojars deploy token as the password.
 
 ```clojure
 (require '[babashka.deps-deploy :as dd])
 
-;; to Clojars, credentials from CLOJARS_USERNAME and CLOJARS_PASSWORD
+;; Deploy to Clojars
 (dd/deploy {:artifact "target/lib.jar"
             :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
 
-;; into ~/.m2/repository
+;; Install locally
 (dd/deploy {:installer :local
             :artifact "target/lib.jar"
             :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"})
 ```
 
-With tools.build, `write-pom` writes the POM at that path and `jar` the
-jar. From the command line:
+With tools.build, use `write-pom` to create the POM and `jar` to create the jar.
 
-```
+From the command line, these commands deploy to Clojars using `pom.xml` in
+the current directory:
+
+```shell
 bb -m babashka.deps-deploy deploy target/lib.jar
 clojure -M -m babashka.deps-deploy deploy target/lib.jar
 ```
 
 ## Options
 
-| option             | meaning                                                                                   |
-|--------------------|-------------------------------------------------------------------------------------------|
-| `:artifact`        | the jar, required; uploaded as `artifact-version.jar`, or `artifact-version-classifier.jar` when its name has that shape. A vector of paths publishes several jars, a `-sources` one say, in one go |
-| `:pom-file`        | the POM, default `pom.xml`                                                                |
-| `:installer`       | `:remote`, the default, or `:local`                                                       |
-| `:repository`      | nothing for Clojars; `:central` for Maven Central; a URL; `{:url ... :id ... :username ... :password ...}`; or `{"id" {:url ...}}` as deps-deploy has it |
-| `:auto-publish`    | Central only: publish once validated instead of waiting for the portal's Publish button    |
-| `:sign-releases?`  | sign the jar and POM with gpg and publish the `.asc` files                                |
-| `:sign-key-id`     | the gpg key to sign with, the default key otherwise                                       |
-| `:read-passphrase?`| `true` always asks the gpg passphrase on the console, `false` never does; see Signing      |
-| `:settings`        | a settings.xml to read credentials from, default `~/.m2/settings.xml`                     |
+| Option | Description |
+|--------|-------------|
+| `:artifact` | Required. Path to a jar, or a vector of paths to deploy several jars together. See file names below. |
+| `:pom-file` | Path to the POM. Default: `"pom.xml"`. |
+| `:installer` | `:remote` to deploy to a repository, or `:local` to install locally. Default: `:remote`. |
+| `:repository` | Default: Clojars. Accepts `:central`, a URL, a repository id, `{:url ... :id ... :username ... :password ...}`, or `{"id" {:url ...}}`. |
+| `:auto-publish` | Maven Central only. Set to `true` to publish automatically after validation. Default: wait for manual publication in the portal. |
+| `:sign-releases?` | Sign the jars and POM with gpg and upload the `.asc` files. Maven Central always requires signing. |
+| `:sign-key-id` | The gpg key to use for signing. If omitted, gpg uses its default key. |
+| `:read-passphrase?` | `true` always prompts for the gpg passphrase on the console. `false` disables the prompt. See [Signing](#signing) for the default behavior. |
+| `:settings` | Path to the Maven settings file for credentials. Default: `~/.m2/settings.xml`. |
 
-## What it does
+Jars are uploaded as `artifact-version.jar`, using the coordinates in the POM.
+To include a classifier, name the input file `artifact-version-classifier.jar`.
+For example, use `lib-1.0.0-sources.jar` for the sources of `lib` version `1.0.0`.
 
-Uploads each file with an `.md5` and `.sha1` next to it, the signatures
-included, then the artifact's `maven-metadata.xml` with the version added.
-Returns the URLs uploaded, or with `:installer :local` the files written,
-in order. Throws on the first transfer that fails, with the URL, the HTTP
-status and what the repository said.
+## Deployment behavior
 
-A `-SNAPSHOT` version goes up the way Maven does it: the files under a
-timestamped name with the next build number, the version's own
-`maven-metadata.xml` updated first, then the artifact's. Every upload is
-compared byte for byte with what slipset/deps-deploy sends, Aether
-underneath, in the test suite.
+For Maven repositories other than Central, `deploy` uploads each file with
+`.md5` and `.sha1` checksums, including signatures. It also updates
+`maven-metadata.xml` with the version.
+
+For `-SNAPSHOT` versions, file names include a timestamp and the next build
+number. The deployment updates the version metadata before the artifact
+metadata.
+
+`deploy` returns the uploaded URLs in order. With `:installer :local`, it
+returns the paths of the files written. If an HTTP transfer fails, it throws
+an exception with the URL, HTTP status, and repository response.
+
+Maven Central uses a bundle upload and returns a deployment id.
+See [Maven Central](#maven-central).
 
 ## Credentials
 
-In order: `:username` and `:password` in the repository map; for Clojars
-the `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` environment variables, a
-deploy token as the password; the `<server>` in `~/.m2/settings.xml`
-whose id is the repository's. Blank values count as unset. Encrypted
-passwords from `settings-security.xml` are read the way Maven reads them.
-`CLOJARS_URL` replaces the Clojars URL.
+Credentials come from the first available source, in this order:
+
+1. `:username` and `:password` in the repository map.
+2. Environment variables: `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` for Clojars,
+   or `CENTRAL_USERNAME` and `CENTRAL_PASSWORD` for Maven Central.
+3. The `<server>` entry with a matching repository id in the Maven settings file.
+
+Blank values count as unset. Encrypted passwords use Maven's
+`settings-security.xml` format.
+
+To deploy to a custom repository, pass a repository map as `:repository`:
 
 ```clojure
 {:url "https://repo.example.com/releases/"
@@ -88,61 +107,73 @@ passwords from `settings-security.xml` are read the way Maven reads them.
  :password "..."}
 ```
 
-A `:repository` string that is not a URL is a repository id, as in
-deps-deploy: its URL comes from `:mvn/repos` in the project's `deps.edn`
-and the user's `~/.clojure/deps.edn`, the project winning, and its
-credentials from the `<server>` with that id in settings.xml. `"clojars"`
-and `"central"` are built in, Central being its portal. The
-`{"id" {...}}` form without a `:url` looks the URL up the same way.
+To use a repository id, set `:repository` to a string such as `"releases"`.
+The URL comes from `:mvn/repos` in the project or user `deps.edn`.
+Project settings take precedence. The user file defaults to `~/.clojure/deps.edn`.
+Credentials come from the matching `<server>` entry in the Maven settings file.
+
+The built-in ids are `"clojars"` and `"central"`. The `"central"` id uses the
+Publisher Portal. A `{"id" {...}}` map without `:url` also resolves its URL
+by repository id.
+
+To override the default Clojars URL, set `CLOJARS_URL`.
 
 ## Signing
 
-`:sign-releases? true` runs `gpg --armour --detach-sign` on the jar and
-the POM and uploads the signatures with checksums of their own, as Clojars
-requires. The passphrase is asked on the console, as deps-deploy does,
-unless `:sign-key-id` is given, when gpg-agent supplies it. Without a
-console, in CI say, gpg-agent supplies it either way, where deps-deploy
-throws. `:read-passphrase? true` or `false` overrides. `DEPS_DEPLOY_GPG`
-names another gpg program.
+To sign the jars and POM, set `:sign-releases? true`.
+The deployment runs `gpg --armour --detach-sign` and uploads the signatures.
+For Clojars, it also uploads checksums for each signature.
+
+By default, signing prompts for a passphrase on the console.
+If you specify `:sign-key-id`, gpg-agent handles the passphrase instead.
+Without a console, such as in CI, gpg-agent also handles the passphrase.
+
+To always prompt on the console, set `:read-passphrase? true`.
+This requires a console. To disable the prompt, set `:read-passphrase? false`.
+To use another gpg executable, set `DEPS_DEPLOY_GPG`.
 
 ## Maven Central
 
-Central no longer takes Maven uploads since OSSRH closed in 2025; a
-release goes to its Publisher Portal as one signed bundle. `:repository
-:central` does that:
+To deploy a release through the Maven Central Publisher Portal, set
+`:repository :central`:
 
 ```clojure
 (dd/deploy {:repository :central
-            :artifact ["target/lib.jar" "target/lib-sources.jar"]
+            :artifact ["target/lib.jar" "target/lib-1.0.0-sources.jar"]
             :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"
             :sign-releases? true})
 ```
 
-The portal validates the bundle and holds it for the Publish button on
-https://central.sonatype.com/publishing/deployments; `:auto-publish true`
-publishes it as soon as it validates. `deploy` waits for either and
-returns the deployment id, or throws with the portal's errors.
+This example assumes that the POM specifies artifact `lib` and version `1.0.0`.
 
-What Central checks, and what this does about it:
+By default, `deploy` waits for validation and returns the deployment id.
+Then publish the release from the
+[deployments page](https://central.sonatype.com/publishing/deployments).
 
-- Signatures on every file: the deploy is always signed, and the public
-  key must be on a keyserver Central reads, keys.openpgp.org with the
-  email verified for instance.
-- A `-sources` jar: give it in `:artifact`.
-- A `-javadoc` jar: an empty one is added when you have none.
-- POM with name, description, url, licenses, developers and scm: with
-  tools.build, `write-pom`'s `:pom-data` and `:scm` supply them.
+To publish automatically after validation, set `:auto-publish true`.
+With this option, `deploy` waits for publication before it returns.
+If validation or publication fails, it throws an exception with the portal errors.
 
-Credentials are a portal user token, from the `central` server in
-`~/.m2/settings.xml` or `CENTRAL_USERNAME` and `CENTRAL_PASSWORD`.
-Snapshots are not supported on Central.
+Before you deploy:
+
+- Publish the public key for your signing key on a keyserver that Central supports.
+- Include a sources jar in `:artifact`, named `artifact-version-sources.jar`.
+- Include a javadoc jar, or let deps-deploy add a placeholder jar.
+- Include name, description, url, licenses, developers, and scm in the POM.
+  With tools.build, use the `:pom-data` and `:scm` options of `write-pom`.
+
+Use a portal user token for credentials. Set `CENTRAL_USERNAME` and
+`CENTRAL_PASSWORD`, or add a `central` server entry to `~/.m2/settings.xml`.
+
+This library supports releases only for Maven Central.
 
 ## Differences from slipset/deps-deploy
 
-- Keyword option values are not looked up as aliases in `deps.edn`; `:repository :central` means Maven Central.
-- `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` apply to Clojars only, not to every repository.
-- No S3 repositories.
-- Maven Central's portal, which deps-deploy has no path to since OSSRH closed.
+- Keyword option values do not resolve to aliases in `deps.edn`.
+  `:repository :central` selects Maven Central.
+- `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` apply only to Clojars.
+- S3 repositories are not supported.
+- Maven Central deployments use the Publisher Portal.
 
 ## License
 

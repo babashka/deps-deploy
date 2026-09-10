@@ -2,4 +2,7 @@
 
 ## Unreleased
 
-- `deploy`: a stand-in for slipset/deps-deploy: a jar and POM with checksums and `maven-metadata.xml` to any Maven repository by HTTP, or into `~/.m2` with `:installer :local`, gpg signatures with `:sign-releases?`, snapshots, several jars in one `:artifact`, Maven Central's portal with `:repository :central`, repository ids from `:mvn/repos`; deps-deploy's options.
+- Add `deploy` to publish jars and POM files to Maven repositories or install them locally with `:installer :local`.
+- Support checksums, Maven metadata, gpg signatures, snapshots, and multiple jars per deployment.
+- Support Maven Central's Publisher Portal with `:repository :central`.
+- Accept slipset/deps-deploy options and repository ids from `:mvn/repos`.
