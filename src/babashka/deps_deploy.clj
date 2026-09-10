@@ -3,7 +3,8 @@
   ~/.m2. Plain HTTP with basic auth, no Maven, so it runs on the JVM and in
   babashka. A stand-in for slipset/deps-deploy with its options, so a
   build.clj moves by changing one symbol."
-  (:require [babashka.deps-deploy.gpg :as gpg]
+  (:require [babashka.deps-deploy.central :as central]
+            [babashka.deps-deploy.gpg :as gpg]
             [babashka.deps-deploy.settings :as settings]
             [babashka.http-client :as http]
             [clojure.java.io :as io]
@@ -185,9 +186,11 @@
 
 (defn- repository
   "A flat map with :id and :url from the :repository option: nil for
-  Clojars, a URL, a flat map, or deps-deploy's {\"id\" {:url ...}}."
+  Clojars, :central for Maven Central's portal, a URL, a flat map, or
+  deps-deploy's {\"id\" {:url ...}}."
   [r]
   (cond (nil? r) (clojars)
+        (= :central r) {:id "central" :url central/url}
         (string? r) (if (re-find #"^[a-z0-9+]+://" r)
                       {:url r}
                       (throw (ex-info (str "Repository " r " needs a URL: {\"" r "\" {:url ...}}") {:repository r})))
@@ -199,20 +202,27 @@
 (defn- present [s]
   (when-not (str/blank? s) s))
 
+(def ^:private env-credentials
+  "The environment variables Clojars and Central credentials come from."
+  {"clojars" ["CLOJARS_USERNAME" "CLOJARS_PASSWORD"]
+   "central" ["CENTRAL_USERNAME" "CENTRAL_PASSWORD"]})
+
 (defn- credentials
   "username and password: the repository's own, then for Clojars
-  CLOJARS_USERNAME and CLOJARS_PASSWORD, then the <server> with the
-  repository's id in settings.xml. Throws when none of them has both."
+  CLOJARS_USERNAME and CLOJARS_PASSWORD and for Central CENTRAL_USERNAME
+  and CENTRAL_PASSWORD, then the <server> with the repository's id in
+  settings.xml. Throws when none of them has both."
   [{:keys [id url username password]} settings-file]
-  (or (when (and (present username) (present password)) {:username username :password password})
-      (when (= "clojars" id)
-        (let [u (present (System/getenv "CLOJARS_USERNAME")) p (present (System/getenv "CLOJARS_PASSWORD"))]
-          (when (and u p) {:username u :password p})))
-      (when id (get (settings/servers (or settings-file (settings/user-settings-file))) id))
-      (throw (ex-info (str "No credentials for " (or id url) ": give :username and :password"
-                           (when (= "clojars" id) ", set CLOJARS_USERNAME and CLOJARS_PASSWORD")
-                           (if id (str " or add a <server> with id " id " to settings.xml") " or give the repository an :id for settings.xml"))
-                      {:repository (or id url)}))))
+  (let [[user-var pass-var] (get env-credentials id)]
+    (or (when (and (present username) (present password)) {:username username :password password})
+        (when user-var
+          (let [u (present (System/getenv user-var)) p (present (System/getenv pass-var))]
+            (when (and u p) {:username u :password p})))
+        (when id (get (settings/servers (or settings-file (settings/user-settings-file))) id))
+        (throw (ex-info (str "No credentials for " (or id url) ": give :username and :password"
+                             (when user-var (str ", set " user-var " and " pass-var))
+                             (if id (str " or add a <server> with id " id " to settings.xml") " or give the repository an :id for settings.xml"))
+                        {:repository (or id url)})))))
 
 (defn- with-slash [url]
   (if (str/ends-with? url "/") url (str url "/")))
@@ -262,15 +272,61 @@
 (defn- version-path [{:keys [group artifact-id version]}]
   (str (str/replace group "." "/") "/" artifact-id "/" version "/"))
 
+;;;; Maven Central
+
+(defn- empty-jar
+  "A jar with nothing in it, as Central accepts for javadoc."
+  ^bytes []
+  (central/bundle [["README.txt" (.getBytes "No javadoc: this is a Clojure library.\n" "UTF-8")]]))
+
+(defn- deploy-central
+  "Zips the signed files with md5 and sha1 sidecars, an empty -javadoc jar
+  added when none is given, uploads the bundle and waits until the portal
+  has validated it, or published it with :auto-publish. Returns the
+  deployment id."
+  [{:keys [auto-publish] :as options} repo credentials coords pom-text]
+  (let [{:keys [group artifact-id version]} coords
+        _ (when (snapshot? version)
+            (throw (ex-info "Central's portal takes releases only; snapshots are not supported" {:version version})))
+        _ (when (false? (:sign-releases? options))
+            (throw (ex-info "Central requires signatures; leave :sign-releases? on" {})))
+        jars (vec (artifacts (:artifact options)))
+        classified (fn [c] (some #(= c (classifier coords %)) jars))
+        _ (when-not (classified "sources")
+            (throw (ex-info "Central requires a -sources jar; add it to :artifact" {:artifact (:artifact options)})))
+        jars (if (classified "javadoc")
+               jars
+               (let [dir (io/file (System/getProperty "java.io.tmpdir") (str "deps-deploy-" (System/nanoTime)))
+                     javadoc (io/file dir (str artifact-id "-" version "-javadoc.jar"))]
+                 (.mkdirs dir)
+                 (io/copy (empty-jar) javadoc)
+                 (conj jars (str javadoc))))
+        to-upload (files (assoc options :sign-releases? true :artifact jars) coords pom-text version)
+        with-sums (mapcat (fn [[name ^bytes bytes]]
+                            (cond-> [[name bytes]]
+                              (not (str/ends-with? name ".asc"))
+                              (conj [(str name ".md5") (.getBytes ^String (digest "MD5" bytes) "UTF-8")]
+                                    [(str name ".sha1") (.getBytes ^String (digest "SHA-1" bytes) "UTF-8")])))
+                          to-upload)
+        dir (version-path coords)
+        zip (central/bundle (map (fn [[name bytes]] [(str dir name) bytes]) with-sums))
+        deployment-name (str group ":" artifact-id ":" version)
+        publishing-type (if auto-publish :automatic :user-defined)]
+    (println "Deploying" deployment-name "to Central as" (:username credentials)
+             (if auto-publish "and publishing" "for you to publish on the portal"))
+    (let [id (central/upload! (merge repo credentials) deployment-name zip publishing-type)]
+      (println "Deployment" id "uploaded, waiting for the portal")
+      (let [state (central/wait! (merge repo credentials) id (if auto-publish "PUBLISHED" "VALIDATED") options)]
+        (println "Deployment" id state)
+        id))))
+
 ;;;; remote
 
-(defn- deploy-remote
+(defn- upload-all
   "Uploads the files, a snapshot's version-level maven-metadata.xml, then
   the artifact's maven-metadata.xml, each with md5 and sha1 sidecars."
-  [{:keys [settings] :as options} coords pom-text]
-  (let [repo (repository (:repository options))
-        {:keys [username password]} (credentials repo settings)
-        auth [username password]
+  [options repo {:keys [username password]} coords pom-text]
+  (let [auth [username password]
         {:keys [group artifact-id version]} coords
         version-url (str (with-slash (:url repo)) (version-path coords))
         metadata-url (str (with-slash (:url repo)) (str/replace group "." "/") "/" artifact-id "/maven-metadata.xml")
@@ -292,6 +348,15 @@
                     (upload! (str version-url "maven-metadata.xml")
                              (.getBytes ^String (snapshot-metadata old-snapshot group artifact-id version moment build (map first to-upload)) "UTF-8")))
                   (upload! metadata-url (.getBytes ^String metadata "UTF-8"))))))
+
+(defn- deploy-remote
+  "To Central's portal as a bundle, to any other repository as PUTs."
+  [{:keys [settings] :as options} coords pom-text]
+  (let [repo (repository (:repository options))
+        creds (credentials repo settings)]
+    (if (central/portal? repo)
+      (deploy-central options repo creds coords pom-text)
+      (upload-all options repo creds coords pom-text))))
 
 ;;;; local
 
@@ -367,8 +432,11 @@
                       publishes several jars, a -sources one say, in one go
     :pom-file         path to the POM, default \"pom.xml\"
     :installer        :remote, the default, or :local
-    :repository       nil for Clojars; a URL; {:url :id :username :password};
-                      or {\"id\" {:url ...}} as deps-deploy has it
+    :repository       nil for Clojars; :central for Maven Central's portal;
+                      a URL; {:url :id :username :password}; or
+                      {\"id\" {:url ...}} as deps-deploy has it
+    :auto-publish     Central only: publish once validated; without it the
+                      bundle waits for the Publish button on the portal
     :sign-releases?   sign the jar and POM with gpg and publish the .asc files
     :sign-key-id      the gpg key to sign with; gpg-agent then supplies the
                       passphrase, otherwise it is asked on the console, as
@@ -379,15 +447,22 @@
 
   Credentials: the repository's :username and :password, for Clojars
   then CLOJARS_USERNAME and CLOJARS_PASSWORD, a deploy token as the
-  password, then the <server> in settings.xml whose id is the repository's.
-  CLOJARS_URL replaces the Clojars URL. Blank values count as unset.
+  password, for Central CENTRAL_USERNAME and CENTRAL_PASSWORD, a portal
+  user token, then the <server> in settings.xml whose id is the
+  repository's. CLOJARS_URL replaces the Clojars URL. Blank values count
+  as unset.
 
   Uploads each file with an md5 and sha1 next to it, then the artifact's
   maven-metadata.xml with the version added. A -SNAPSHOT version goes up
   under a timestamped name with the next build number, and the version's
   own maven-metadata.xml is updated before the artifact's. Returns the
   URLs uploaded, or the files written, in order. Throws on the first
-  failure, with the URL and status."
+  failure, with the URL and status.
+
+  Central takes releases only, signed, with a -sources jar in :artifact;
+  an empty -javadoc jar is added when none is given. The files go up as
+  one bundle and deploy waits until the portal has validated it, then
+  returns the deployment id."
   [{:keys [artifact pom-file installer] :or {pom-file "pom.xml" installer :remote} :as options}]
   (when-not artifact (throw (ex-info "Missing :artifact, the jar to deploy" {})))
   (when-not (#{:remote :local} installer)

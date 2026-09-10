@@ -1,5 +1,6 @@
 (ns babashka.deps-deploy-test
   (:require [babashka.deps-deploy :as publish]
+            [babashka.deps-deploy.central :as central]
             [babashka.deps-deploy.cipher :as cipher]
             [babashka.deps-deploy.gpg :as gpg]
             [babashka.deps-deploy.settings :as settings]
@@ -246,14 +247,14 @@
         (spit pom-file pom)
         (System/setProperty "deps-deploy.gpg" gpg-script)
         (try
-          (let [uploaded (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :sign-releases? true
+          (let [uploaded (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :sign-releases? true :read-passphrase? false
                                           :repository {:url url :username "user" :password "secret"}})]
             (is (= 15 (count uploaded)) "the two signatures come with checksums of their own")
             (is (str/starts-with? (get @store "/org/example/demo/1.2.3/demo-1.2.3.jar.asc") "-----BEGIN PGP SIGNATURE-----"))
             (is (contains? @store "/org/example/demo/1.2.3/demo-1.2.3.pom.asc.sha1")))
           (testing "a wrong key names gpg's complaint"
             (is (thrown-with-msg? Exception #"gpg failed to sign .*demo-1.2.3.pom \(exit \d+\)"
-                                  (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :sign-releases? true
+                                  (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :sign-releases? true :read-passphrase? false
                                                    :sign-key-id "nobody@example.com"
                                                    :repository {:url url :username "user" :password "secret"}}))))
           (finally (System/clearProperty "deps-deploy.gpg") (stop))))
@@ -283,3 +284,83 @@
     (doseq [{:keys [dispatcher blob]} cases]
       (is (= dispatcher (cipher/decrypt-password blob {:file security}))))
     (is (= not-encrypted (cipher/decrypt-password not-encrypted {:file security})) "no blob, no change")))
+
+;; Central's portal: the bundle upload and the status polls.
+(defn- fake-portal []
+  (let [uploads (atom [])
+        polls (atom 0)
+        handler (fn [{:keys [request-method uri headers body query-string]}]
+                  (cond
+                    (not= "Bearer dXNlcjpzZWNyZXQ=" (get headers "authorization")) {:status 401 :body "who?"}
+                    (and (= :post request-method) (= "/api/v1/publisher/upload" uri))
+                    (do (swap! uploads conj {:query query-string :body (.readAllBytes ^java.io.InputStream body)})
+                        {:status 201 :body "dep-123"})
+                    (and (= :post request-method) (= "/api/v1/publisher/status" uri))
+                    {:status 200 :body (if (str/includes? query-string "fails")
+                                         "{\"deploymentId\":\"dep-123\",\"deploymentState\":\"FAILED\",\"errors\":{\"pkg:maven/org.example/demo@1.2.3\":[\"Missing signature\"]}}"
+                                         (str "{\"deploymentId\":\"dep-123\",\"deploymentState\":\""
+                                              (case (swap! polls inc) 1 "VALIDATING" 2 "VALIDATED" "PUBLISHED") "\"}"))}
+                    :else {:status 404}))
+        srv (server/run-server handler {:port 0 :legacy-return-value? false})]
+    {:uploads uploads :stop #(server/server-stop! srv) :url (str "http://localhost:" (server/server-port srv) "/")}))
+
+(defn- zip-entries
+  "The entry names of the zip inside a multipart body."
+  [^bytes body]
+  (let [text (String. body "ISO-8859-1")
+        start (str/index-of text "PK\u0003\u0004")]
+    (with-open [in (java.util.zip.ZipInputStream. (java.io.ByteArrayInputStream. body start (- (count body) start)))]
+      (loop [names []]
+        (if-let [entry (.getNextEntry in)]
+          (recur (conj names (.getName entry)))
+          (set names))))))
+
+(deftest central-bundle-test
+  (is (str/includes? (String. (#'publish/empty-jar) "ISO-8859-1") "README.txt") "the javadoc stand-in is a zip with a note"))
+
+(deftest central-test
+  (let [dir (temp-dir "deps-deploy-central")]
+    (if-let [gpg-script (throwaway-gpg dir)]
+      (let [jar (io/file dir "demo-1.2.3.jar")
+            sources (io/file dir "demo-1.2.3-sources.jar")
+            pom-file (io/file dir "pom.xml")
+            {:keys [uploads stop url]} (fake-portal)
+            repository {:url url :username "user" :password "secret"}]
+        (spit jar "jar")
+        (spit sources "sources")
+        (spit pom-file pom)
+        (System/setProperty "deps-deploy.gpg" gpg-script)
+        (try
+          (with-redefs [central/portal? (fn [r] (= url (:url r)))]
+            (testing "sources given, javadoc added, everything signed, checksums for all but the signatures"
+              (is (= "dep-123" (publish/deploy {:artifact [(str jar) (str sources)] :pom-file (str pom-file)
+                                                :repository repository :interval-ms 10 :timeout-ms 5000 :read-passphrase? false})))
+              (let [{:keys [query body]} (first @uploads)
+                    entries (zip-entries body)]
+                (is (str/includes? query "publishingType=USER_DEFINED"))
+                (is (str/includes? query "name=org.example%3Ademo%3A1.2.3"))
+                (is (= #{"org/example/demo/1.2.3/demo-1.2.3.pom" "org/example/demo/1.2.3/demo-1.2.3.pom.asc"
+                         "org/example/demo/1.2.3/demo-1.2.3.pom.md5" "org/example/demo/1.2.3/demo-1.2.3.pom.sha1"
+                         "org/example/demo/1.2.3/demo-1.2.3.jar" "org/example/demo/1.2.3/demo-1.2.3.jar.asc"
+                         "org/example/demo/1.2.3/demo-1.2.3.jar.md5" "org/example/demo/1.2.3/demo-1.2.3.jar.sha1"
+                         "org/example/demo/1.2.3/demo-1.2.3-sources.jar" "org/example/demo/1.2.3/demo-1.2.3-sources.jar.asc"
+                         "org/example/demo/1.2.3/demo-1.2.3-sources.jar.md5" "org/example/demo/1.2.3/demo-1.2.3-sources.jar.sha1"
+                         "org/example/demo/1.2.3/demo-1.2.3-javadoc.jar" "org/example/demo/1.2.3/demo-1.2.3-javadoc.jar.asc"
+                         "org/example/demo/1.2.3/demo-1.2.3-javadoc.jar.md5" "org/example/demo/1.2.3/demo-1.2.3-javadoc.jar.sha1"}
+                       entries))))
+            (testing "auto-publish asks for AUTOMATIC"
+              (reset! uploads [])
+              (publish/deploy {:artifact [(str jar) (str sources)] :pom-file (str pom-file)
+                               :repository repository :auto-publish true :interval-ms 10 :timeout-ms 5000 :read-passphrase? false})
+              (is (str/includes? (:query (first @uploads)) "publishingType=AUTOMATIC")))
+            (testing "a rejected bundle names the portal's errors"
+              (is (thrown-with-msg? Exception #"Central rejected deployment dep-123: \{.*Missing signature"
+                                    (let [original central/status]
+                                      (with-redefs [central/status (fn [repo id] (original repo (str id "&fails")))]
+                                      (publish/deploy {:artifact [(str jar) (str sources)] :pom-file (str pom-file)
+                                                       :repository repository :interval-ms 10 :timeout-ms 5000 :read-passphrase? false}))))))
+            (testing "no sources, no deal"
+              (is (thrown-with-msg? Exception #"Central requires a -sources jar"
+                                    (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :repository repository})))))
+          (finally (System/clearProperty "deps-deploy.gpg") (stop))))
+      (println "gpg unavailable, skipping central-test"))))
