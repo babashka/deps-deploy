@@ -1,7 +1,12 @@
-{:paths ["src" "test"]
+{:paths ["src" "test" "."]
+ :deps {io.github.clojure/tools.build {:mvn/version "0.10.14"}}
  :tasks
  {test {:doc "Runs the tests with bb"
         :requires ([clojure.test :as t])
         :task (do (require 'babashka.deps-deploy-test)
                   (let [{:keys [fail error]} (t/run-tests 'babashka.deps-deploy-test)]
-                    (System/exit (+ fail error))))}}}
+                    (System/exit (+ fail error))))}
+  clean {:exec-fn build/clean}
+  jar {:exec-fn build/jar}
+  install {:exec-fn build/install}
+  deploy {:exec-fn build/deploy}}}
