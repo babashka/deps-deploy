@@ -51,7 +51,8 @@ clojure -M -m babashka.deps-deploy deploy target/lib.jar
 | `:artifact`        | the jar, required; uploaded as `artifact-version.jar`, or `artifact-version-classifier.jar` when its name has that shape. A vector of paths publishes several jars, a `-sources` one say, in one go |
 | `:pom-file`        | the POM, default `pom.xml`                                                                |
 | `:installer`       | `:remote`, the default, or `:local`                                                       |
-| `:repository`      | nothing for Clojars; a URL; `{:url ... :id ... :username ... :password ...}`; or `{"id" {:url ...}}` as deps-deploy has it |
+| `:repository`      | nothing for Clojars; `:central` for Maven Central; a URL; `{:url ... :id ... :username ... :password ...}`; or `{"id" {:url ...}}` as deps-deploy has it |
+| `:auto-publish`    | Central only: publish once validated instead of waiting for the portal's Publish button    |
 | `:sign-releases?`  | sign the jar and POM with gpg and publish the `.asc` files                                |
 | `:sign-key-id`     | the gpg key to sign with, the default key otherwise                                       |
 | `:read-passphrase?`| `true` always asks the gpg passphrase on the console, `false` never does; see Signing      |
@@ -97,11 +98,44 @@ console, in CI say, gpg-agent supplies it either way, where deps-deploy
 throws. `:read-passphrase? true` or `false` overrides. `DEPS_DEPLOY_GPG`
 names another gpg program.
 
+## Maven Central
+
+Central no longer takes Maven uploads since OSSRH closed in 2025; a
+release goes to its Publisher Portal as one signed bundle. `:repository
+:central` does that:
+
+```clojure
+(dd/deploy {:repository :central
+            :artifact ["target/lib.jar" "target/lib-sources.jar"]
+            :pom-file "target/classes/META-INF/maven/my.group/lib/pom.xml"
+            :sign-releases? true})
+```
+
+The portal validates the bundle and holds it for the Publish button on
+https://central.sonatype.com/publishing/deployments; `:auto-publish true`
+publishes it as soon as it validates. `deploy` waits for either and
+returns the deployment id, or throws with the portal's errors.
+
+What Central checks, and what this does about it:
+
+- Signatures on every file: the deploy is always signed, and the public
+  key must be on a keyserver Central reads, keys.openpgp.org with the
+  email verified for instance.
+- A `-sources` jar: give it in `:artifact`.
+- A `-javadoc` jar: an empty one is added when you have none.
+- POM with name, description, url, licenses, developers and scm: with
+  tools.build, `write-pom`'s `:pom-data` and `:scm` supply them.
+
+Credentials are a portal user token, from the `central` server in
+`~/.m2/settings.xml` or `CENTRAL_USERNAME` and `CENTRAL_PASSWORD`.
+Snapshots are not supported on Central.
+
 ## Differences from slipset/deps-deploy
 
 - `:repository` strings are URLs, not aliases into `deps.edn`'s `:mvn/repos`.
 - `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` apply to Clojars only, not to every repository.
 - No S3 repositories.
+- Maven Central's portal, which deps-deploy has no path to since OSSRH closed.
 
 ## License
 
