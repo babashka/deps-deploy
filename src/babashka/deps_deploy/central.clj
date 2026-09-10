@@ -38,18 +38,41 @@
   (ex-info (str "Central " what ": HTTP " status (let [b (str/trim (str body))] (when-not (str/blank? b) (str " " b))))
            {:status status :body body}))
 
+(defn- multipart
+  "One file part as bytes, with the header its content type goes in. The
+  portal answers 500 to a chunked body, so it is built up front and sent
+  with a length."
+  [field file-name ^bytes content]
+  (let [boundary (str "----deps-deploy-" (java.util.UUID/randomUUID))
+        head (.getBytes (str "--" boundary "\r\n"
+                             "Content-Disposition: form-data; name=\"" field "\"; filename=\"" file-name "\"\r\n"
+                             "Content-Type: application/octet-stream\r\n\r\n") "UTF-8")
+        tail (.getBytes (str "\r\n--" boundary "--\r\n") "UTF-8")
+        out (ByteArrayOutputStream.)]
+    (.write out head)
+    (.write out content)
+    (.write out tail)
+    {:content-type (str "multipart/form-data; boundary=" boundary)
+     :body (.toByteArray out)}))
+
+(def ^:private client
+  "HTTP/1.1 as curl speaks it; the portal does not like the h2c upgrade."
+  (delay (http/client (assoc http/default-client-opts :version :http1.1))))
+
 (defn upload!
   "Uploads a bundle and returns its deployment id. publishing-type is
-  :automatic, published once validated, or :user-defined, held for the
+  :automatic, published once validated, or :user-managed, held for the
   portal's Publish button."
   [{:keys [url username password]} name ^bytes zip publishing-type]
-  (let [{:keys [status body] :as resp}
+  (let [{:keys [content-type body]} (multipart "bundle" (str name ".zip") zip)
+        {:keys [status body] :as resp}
         (http/post (str (if (str/ends-with? url "/") url (str url "/")) "api/v1/publisher/upload")
-                   {:headers {"Authorization" (bearer username password)}
+                   {:client @client
+                    :headers {"Authorization" (bearer username password)
+                              "Content-Type" content-type}
                     :query-params {"name" name
-                                   "publishingType" (if (= :automatic publishing-type) "AUTOMATIC" "USER_DEFINED")}
-                    :multipart [{:name "bundle" :content zip :file-name (str name ".zip")
-                                 :content-type "application/octet-stream"}]
+                                   "publishingType" (if (= :automatic publishing-type) "AUTOMATIC" "USER_MANAGED")}
+                    :body body
                     :throw false})]
     (when-not (= 201 status) (throw (failed "refused the upload" resp)))
     (str/trim (str body))))

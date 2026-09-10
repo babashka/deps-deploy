@@ -311,7 +311,7 @@
         dir (version-path coords)
         zip (central/bundle (map (fn [[name bytes]] [(str dir name) bytes]) with-sums))
         deployment-name (str group ":" artifact-id ":" version)
-        publishing-type (if auto-publish :automatic :user-defined)]
+        publishing-type (if auto-publish :automatic :user-managed)]
     (println "Deploying" deployment-name "to Central as" (:username credentials)
              (if auto-publish "and publishing" "for you to publish on the portal"))
     (let [id (central/upload! (merge repo credentials) deployment-name zip publishing-type)]

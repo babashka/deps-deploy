@@ -337,7 +337,7 @@
                                                 :repository repository :interval-ms 10 :timeout-ms 5000 :read-passphrase? false})))
               (let [{:keys [query body]} (first @uploads)
                     entries (zip-entries body)]
-                (is (str/includes? query "publishingType=USER_DEFINED"))
+                (is (str/includes? query "publishingType=USER_MANAGED"))
                 (is (str/includes? query "name=org.example%3Ademo%3A1.2.3"))
                 (is (= #{"org/example/demo/1.2.3/demo-1.2.3.pom" "org/example/demo/1.2.3/demo-1.2.3.pom.asc"
                          "org/example/demo/1.2.3/demo-1.2.3.pom.md5" "org/example/demo/1.2.3/demo-1.2.3.pom.sha1"
