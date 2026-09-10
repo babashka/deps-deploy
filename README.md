@@ -88,6 +88,13 @@ passwords from `settings-security.xml` are read the way Maven reads them.
  :password "..."}
 ```
 
+A `:repository` string that is not a URL is a repository id, as in
+deps-deploy: its URL comes from `:mvn/repos` in the project's `deps.edn`
+and the user's `~/.clojure/deps.edn`, the project winning, and its
+credentials from the `<server>` with that id in settings.xml. `"clojars"`
+and `"central"` are built in, Central being its portal. The
+`{"id" {...}}` form without a `:url` looks the URL up the same way.
+
 ## Signing
 
 `:sign-releases? true` runs `gpg --armour --detach-sign` on the jar and
@@ -132,7 +139,7 @@ Snapshots are not supported on Central.
 
 ## Differences from slipset/deps-deploy
 
-- `:repository` strings are URLs, not aliases into `deps.edn`'s `:mvn/repos`.
+- Keyword option values are not looked up as aliases in `deps.edn`; `:repository :central` means Maven Central.
 - `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` apply to Clojars only, not to every repository.
 - No S3 repositories.
 - Maven Central's portal, which deps-deploy has no path to since OSSRH closed.
