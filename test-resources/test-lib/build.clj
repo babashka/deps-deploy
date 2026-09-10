@@ -24,12 +24,12 @@
                 :version version
                 :basis (b/create-basis {:project "deps.edn"})
                 :src-dirs ["src"]
-                :scm {:url "https://github.com/babashka/babashka.deps-deploy"
-                      :connection "scm:git:git@github.com:babashka/babashka.deps-deploy.git"
-                      :developerConnection "scm:git:git@github.com:babashka/babashka.deps-deploy.git"
+                :scm {:url "https://github.com/babashka/deps-deploy"
+                      :connection "scm:git:git@github.com:babashka/deps-deploy.git"
+                      :developerConnection "scm:git:git@github.com:babashka/deps-deploy.git"
                       :tag (str "v" version)}
                 :pom-data [[:description "A library that exists to be published; babashka.deps-deploy's deploys are tried on it"]
-                           [:url "https://github.com/babashka/babashka.deps-deploy"]
+                           [:url "https://github.com/babashka/deps-deploy"]
                            [:licenses [:license [:name "EPL-1.0"] [:url "https://www.eclipse.org/legal/epl-v10.html"]]]
                            ;; Central wants a developer
                            [:developers [:developer [:name "Michiel Borkent"]]]]})
