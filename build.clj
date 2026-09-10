@@ -60,18 +60,21 @@
                 :class-dir class-dir})))
 
 (defn deploy
-  "Build and deploy to Clojars or Maven Central, signed"
+  "Build and deploy to Clojars or Maven Central"
   {:org.babashka/cli {:spec {:repository {:desc "Where to deploy"
                                           :enum ["clojars" "central"]
                                           :default "clojars"}
+                             :sign {:coerce :boolean
+                                    :desc "Sign with gpg; Central always signs"}
                              :publish {:coerce :boolean
                                        :desc "Central: publish once validated, without the portal's Publish button"}}}}
-  [{:keys [repository publish] :or {repository "clojars"}}]
+  [{:keys [repository sign publish] :or {repository "clojars"}}]
   (let [{:keys [jar sources pom]} (jar nil)
+        central? (= "central" (str repository))
         deploy (requiring-resolve 'babashka.deps-deploy/deploy)]
     (deploy {:installer :remote
              :artifact [jar sources]
              :pom-file pom
-             :repository (when (= "central" (str repository)) :central)
-             :sign-releases? true
+             :repository (when central? :central)
+             :sign-releases? (or central? (boolean sign))
              :auto-publish (boolean publish)})))
