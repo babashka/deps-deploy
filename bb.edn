@@ -6,7 +6,5 @@
         :task (do (require 'babashka.deps-deploy-test)
                   (let [{:keys [fail error]} (t/run-tests 'babashka.deps-deploy-test)]
                     (System/exit (+ fail error))))}
-  clean {:exec-fn build/clean}
-  jar {:exec-fn build/jar}
   install {:exec-fn build/install}
   deploy {:exec-fn build/deploy}}}
