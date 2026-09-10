@@ -207,11 +207,44 @@
         pom-file (io/file dir "pom.xml")]
     (spit jar "jar")
     (spit pom-file pom)
-    (is (thrown-with-msg? Exception #"Repository nope needs a URL"
-                          (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :repository "nope"}))
-        "a repository id without a URL is an error, not a NullPointerException")
+    (with-redefs [publish/deps-files (fn [] [])]
+      (is (thrown-with-msg? Exception #"Repository nope is not in the :mvn/repos"
+                            (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :repository "nope"}))
+          "an unknown repository id is an error, not a NullPointerException"))
     (is (thrown-with-msg? Exception #"Unknown :repository :nope"
                           (publish/deploy {:artifact (str jar) :pom-file (str pom-file) :repository :nope})))))
+
+(deftest repository-id-test
+  (let [dir (temp-dir "deps-deploy-ids")
+        jar (io/file dir "demo.jar")
+        pom-file (io/file dir "pom.xml")
+        user-deps (io/file dir "user-deps.edn")
+        project-deps (io/file dir "deps.edn")
+        settings (io/file dir "settings.xml")
+        {:keys [store stop url]} (fake-repo "Basic dXNlcjpzZWNyZXQ=")]
+    (spit jar "jar")
+    (spit pom-file pom)
+    (spit user-deps (pr-str {:mvn/repos {"fake" {:url "http://localhost:1/"} "gone" {:url "http://localhost:1/"}}}))
+    (spit project-deps (pr-str {:mvn/repos {"fake" {:url url} "gone" nil}}))
+    (spit settings "<settings><servers><server><id>fake</id><username>user</username><password>secret</password></server></servers></settings>")
+    (try
+      (with-redefs [publish/deps-files (fn [] [user-deps project-deps])]
+        (testing "an id from the project deps.edn, winning over the user's, credentials from settings.xml"
+          (is (= 9 (count (publish/deploy {:artifact (str jar) :pom-file (str pom-file)
+                                           :repository "fake" :settings (str settings)}))))
+          (is (contains? @store "/org/example/demo/1.2.3/demo-1.2.3.jar")))
+        (testing "deps-deploy's nested map without a URL takes it from deps.edn"
+          (reset! store {})
+          (is (= 9 (count (publish/deploy {:artifact (str jar) :pom-file (str pom-file)
+                                           :repository {"fake" {:username "user" :password "secret"}}})))))
+        (testing "Clojars and Central are built in"
+          (is (= "clojars" (:id (#'publish/repository "clojars"))))
+          (is (= central/url (:url (#'publish/repository "central")))))
+        (testing "an id set to nil in the project deps.edn, or found nowhere, names where it looked"
+          (is (thrown-with-msg? Exception #"Repository gone is not in the :mvn/repos of .*user-deps\.edn or .*deps\.edn"
+                                (#'publish/repository "gone")))
+          (is (thrown-with-msg? Exception #"Repository nope is not in" (#'publish/repository "nope")))))
+      (finally (stop)))))
 
 ;; gpg with a throwaway key; skipped where gpg or a shell is missing
 (defn- throwaway-gpg

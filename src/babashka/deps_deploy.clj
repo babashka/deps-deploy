@@ -7,6 +7,7 @@
             [babashka.deps-deploy.gpg :as gpg]
             [babashka.deps-deploy.settings :as settings]
             [babashka.http-client :as http]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.security MessageDigest]))
@@ -184,19 +185,62 @@
 
 ;;;; repositories and credentials
 
+(defn- user-deps-file
+  "The user deps.edn where the Clojure CLI looks for it: CLJ_CONFIG,
+  XDG_CONFIG_HOME/clojure, else ~/.clojure."
+  []
+  (io/file (or (System/getenv "CLJ_CONFIG")
+               (some-> (System/getenv "XDG_CONFIG_HOME") (io/file "clojure") str)
+               (str (io/file (System/getProperty "user.home") ".clojure")))
+           "deps.edn"))
+
+(defn- deps-files
+  "The deps.edn files repository ids are looked up in, later ones winning."
+  []
+  [(user-deps-file) (io/file "deps.edn")])
+
+(defn- read-edn [file]
+  (try (edn/read-string (slurp file))
+       (catch Exception e
+         (throw (ex-info (str "Could not read " file ": " (ex-message e)) {:file (str file)} e)))))
+
+(defn- mvn-repos
+  "The :mvn/repos of the deps.edn files merged; a repository set to nil
+  is removed."
+  []
+  (->> (deps-files)
+       (filter #(.exists (io/file %)))
+       (map #(:mvn/repos (read-edn %)))
+       (apply merge)
+       (into {} (remove (comp nil? val)))))
+
+(defn- named-repository
+  "The repository with id, as deps-deploy finds it: from :mvn/repos in the
+  user and project deps.edn, else Clojars and Central as the root
+  deps.edn has them, Central being its portal."
+  [id]
+  (let [repos (mvn-repos)]
+    (cond (contains? repos id) (assoc (get repos id) :id id)
+          (= "clojars" id) (clojars)
+          (= "central" id) {:id "central" :url central/url}
+          :else (throw (ex-info (str "Repository " id " is not in the :mvn/repos of "
+                                     (str/join " or " (map str (deps-files)))
+                                     "; give a URL or {\"" id "\" {:url ...}}")
+                                {:repository id})))))
+
 (defn- repository
   "A flat map with :id and :url from the :repository option: nil for
-  Clojars, :central for Maven Central's portal, a URL, a flat map, or
-  deps-deploy's {\"id\" {:url ...}}."
+  Clojars, :central for Maven Central's portal, a URL, a repository id, a
+  flat map, or deps-deploy's {\"id\" {...}}, its URL looked up by id when
+  it has none."
   [r]
   (cond (nil? r) (clojars)
         (= :central r) {:id "central" :url central/url}
-        (string? r) (if (re-find #"^[a-z0-9+]+://" r)
-                      {:url r}
-                      (throw (ex-info (str "Repository " r " needs a URL: {\"" r "\" {:url ...}}") {:repository r})))
+        (string? r) (if (re-find #"^[a-z0-9+]+://" r) {:url r} (named-repository r))
         (and (map? r) (:url r)) r
-        (and (map? r) (= 1 (count r)) (string? (key (first r))) (:url (val (first r))))
-        (let [[id m] (first r)] (assoc m :id id))
+        (and (map? r) (= 1 (count r)) (string? (key (first r))) (map? (val (first r))))
+        (let [[id m] (first r)]
+          (assoc (merge (when-not (:url m) (named-repository id)) m) :id id))
         :else (throw (ex-info (str "Unknown :repository " (pr-str r)) {:repository r}))))
 
 (defn- present [s]
