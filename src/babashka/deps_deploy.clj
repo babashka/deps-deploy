@@ -295,11 +295,16 @@
 (defn- files
   "The files to publish as [name bytes] pairs: the POM, each jar under its
   Maven name, and with :sign-releases? a gpg signature for each. The names
-  carry file-version: the version, or a snapshot's timestamped one."
+  carry file-version: the version, or a snapshot's timestamped one.
+  Throws if two jars get the same name."
   [{:keys [artifact sign-releases? sign-key-id] :as options} coords pom-text file-version]
   (let [{:keys [artifact-id]} coords
         jar-name (fn [jar] (str artifact-id "-" file-version (some->> (classifier coords jar) (str "-")) ".jar"))
         pom-name (str artifact-id "-" file-version ".pom")
+        _ (doseq [[name jars] (group-by jar-name (artifacts artifact))
+                  :when (next jars)]
+            (throw (ex-info (str "Several jars would be uploaded as " name ": " (str/join ", " jars))
+                            {:jars (mapv str jars)})))
         plain (into [[pom-name (.getBytes ^String pom-text "UTF-8")]]
                     (map (fn [jar] [(jar-name jar) (read-bytes jar)])) (artifacts artifact))
         signed (when sign-releases?

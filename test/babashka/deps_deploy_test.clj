@@ -34,6 +34,7 @@
   (let [coords {:artifact "demo" :version "1.2.3"}]
     (is (nil? (publish/classifier coords "target/demo.jar")))
     (is (nil? (publish/classifier coords "target/demo-1.2.3.jar")))
+    (is (nil? (publish/classifier coords "target/demo-standalone-1.2.3.jar")))
     (is (= "sources" (publish/classifier coords "target/demo-1.2.3-sources.jar")))
     (is (= "aarch64-linux" (publish/classifier coords "demo-1.2.3-aarch64-linux.jar")))))
 
@@ -97,6 +98,21 @@
           (publish/deploy {:artifact (str sources) :pom-file (str pom-file)
                            :repository {:url url :username "user" :password "secret"}})
           (is (= "sources" (get @store "/org/example/demo/1.2.3/demo-1.2.3-sources.jar")))))
+      (testing "demo-standalone-1.2.3.jar uploads as demo-1.2.3.jar"
+        (let [standalone (io/file dir "demo-standalone-1.2.3.jar")]
+          (spit standalone "standalone")
+          (reset! store {})
+          (publish/deploy {:artifact (str standalone) :pom-file (str pom-file)
+                           :repository {:url url :username "user" :password "secret"}})
+          (is (= "standalone" (get @store "/org/example/demo/1.2.3/demo-1.2.3.jar")))
+          (is (not-any? #(str/includes? % "standalone") (keys @store)))))
+      (testing "two jars without a classifier throw before any upload"
+        (let [standalone (io/file dir "demo-standalone-1.2.3.jar")]
+          (reset! store {})
+          (is (thrown-with-msg? Exception #"Several jars would be uploaded as demo-1.2.3.jar"
+                                (publish/deploy {:artifact [(str jar) (str standalone)] :pom-file (str pom-file)
+                                                 :repository {:url url :username "user" :password "secret"}})))
+          (is (empty? @store))))
       (testing "credentials from settings.xml by server id"
         (let [settings (io/file dir "settings.xml")]
           (spit settings "<settings><servers><server><id>fake</id><username>user</username><password>secret</password></server></servers></settings>")
